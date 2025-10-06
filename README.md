@@ -24,7 +24,7 @@ This integration can be installed easily using the Home Assistant Community Stor
 1.  **Open HACS** in your Home Assistant UI.
 2.  Go to the **Integrations** section.
 3.  Click the **three dots** in the top right corner and select **Custom repositories**.
-4.  Enter the URL of this repository: `https://github.com/condatek/finderBlissHA`
+4.  Enter the URL of this repository: `https://github.com/condatek/finderblissha`
 5.  Select the **Category** as `Integration`.
 6.  Click **ADD**.
 7.  HACS will list the new repository. Search for **"Finder Bliss"** and click **Download**.
@@ -57,4 +57,5 @@ Contributions to this project are welcome! If you'd like to help develop feature
 **TODOs:**
 * Optimize the WebSocket connection for real-time updates.
 * Add support for specific device features (e.g., specific schedule modes).
+
 * Improve error handling and extend test coverage.
