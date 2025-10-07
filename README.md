@@ -57,5 +57,4 @@ Contributions to this project are welcome! If you'd like to help develop feature
 **TODOs:**
 * Optimize the WebSocket connection for real-time updates.
 * Add support for specific device features (e.g., specific schedule modes).
-
 * Improve error handling and extend test coverage.

@@ -110,39 +110,39 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def target_temperature(self) -> float | None:
-        """Return the temperature we are trying to reach (manual_set_point if valid, else set_point)."""
-        if self.hvac_mode == HVACMode.OFF:
-            return None
-
+        """Return the temperature we are trying to reach (set_point)."""
+        
         dev = self._find_device()
         if dev is None:
             return None
 
-        manual_sp = getattr(dev, "manual_set_point", None)
-        # Use manual_set_point only if > 0
-        if manual_sp is not None and isinstance(manual_sp, (int, float)) and manual_sp > 0:
-            return float(manual_sp)
+        # 1. CRITICAL: Check the HVAC mode *first*. If we are OFF, target temp must be None.
+        # This prevents the UI from trying to default to current_temperature.
+        if self.hvac_mode == HVACMode.OFF:
+            return None
 
-        set_point = getattr(dev, "set_point", None)
-
-        _LOGGER.debug(
-            "FinderBlissClimate[%s]: hvac_mode=%s | mode_setting=%s | set_point=%s | manual_set_point=%s | temperature=%s",
-            self._device_serial,
-            self.hvac_mode,
-            getattr(self._find_device(), 'mode_setting', None),
-            getattr(self._find_device(), 'set_point', None),
-            getattr(self._find_device(), 'manual_set_point', None),
-            getattr(self._find_device(), 'temperature', None),
-)
-
-
-        return float(set_point) if set_point not in (None, "N/A") else None
+        # 2. Get the set_point value directly from the device object.
+        # Ensure we always get a string/float value.
+        set_point_raw = getattr(dev, "set_point", None) 
+            
+        # 3. Handle cases where the data might be missing or an invalid string
+        if set_point_raw is None or str(set_point_raw).upper() == "N/A":
+            # If the setpoint is genuinely unavailable, return None.
+            return None
+        
+        try:
+            # 4. Return the value, explicitly cast to float.
+            return float(set_point_raw)
+        except (ValueError, TypeError):
+            # Log an error if we cannot cast the value, but return None to avoid a crash.
+            _LOGGER.error("Bliss set_point value '%s' is not a valid number.", set_point_raw)
+            return None
 
     @property
     def hvac_mode(self) -> HVACMode:
         """Return current operation mode (e.g., HEAT, AUTO, OFF)."""
         dev = self._find_device()
-        mode = getattr(dev, "mode", None)
+        mode = getattr(dev, "mode_setting", None)
         
         return BLISS_TO_HA_MODE.get(str(mode).upper(), HVACMode.OFF)
 
@@ -178,6 +178,32 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
 
     # --- Control Methods (STABILITY FIXES APPLIED HERE) ---
 
+    async def _async_execute_api_command(self, api_coroutine, *args, **kwargs) -> None:
+        """
+        Executes a PyFinderBliss API command, ensuring the coordinator/connection
+        is refreshed as a first line of defense against WebSocket errors.
+        """
+        
+        # HACK/FIX: Force an initial coordinator refresh to ensure the WebSocket 
+        # is connected before attempting a control command.
+        await self.coordinator.async_request_refresh()
+        
+        try:
+            # Execute the actual API command
+            await api_coroutine(*args, **kwargs)
+            
+        except RuntimeError as err:
+            # Re-raise any critical errors that aren't addressed by the refresh logic
+            if "WebSocket not connected" in str(err):
+                _LOGGER.error("Bliss API failed to connect/execute control command after refresh: %s", err)
+            raise 
+
+        # Final refresh to update HA state with the result from the thermostat
+        await self.coordinator.async_request_refresh()
+
+
+    # --- Control Methods (Using the new command executor) ---
+
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target hvac mode."""
         
@@ -188,15 +214,18 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
             return
 
         try:
-            await self._api.async_set_mode(self._device_serial, bliss_mode)
+            await self._async_execute_api_command(
+                self._api.async_set_mode, 
+                self._device_serial, 
+                bliss_mode
+            )
             
         except Exception as err:
             _LOGGER.error("Failed to set HVAC mode to %s for device %s: %s", 
                           bliss_mode, self._device_serial, err)
+            # Re-raise if the error wasn't handled by the wrapper
             raise
 
-        # Request immediate refresh to update state
-        await self.coordinator.async_request_refresh()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature (set_point)."""
@@ -207,15 +236,18 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
 
         # 1. First, ensure the device is in MANUAL/HEAT mode to accept a setpoint change
         if self.hvac_mode != HVACMode.HEAT:
+            # NOTE: async_set_hvac_mode already uses the command executor and handles refresh
             await self.async_set_hvac_mode(HVACMode.HEAT)
 
         try:
-            await self._api.async_set_temperature(self._device_serial, target_temp)
+            await self._async_execute_api_command(
+                self._api.async_set_temperature, 
+                self._device_serial, 
+                target_temp
+            )
             
         except Exception as err:
             _LOGGER.error("Failed to set temperature to %s for device %s: %s", 
                           target_temp, self._device_serial, err)
+            # Re-raise if the error wasn't handled by the wrapper
             raise
-
-        # Request immediate refresh to update state
-        await self.coordinator.async_request_refresh()
