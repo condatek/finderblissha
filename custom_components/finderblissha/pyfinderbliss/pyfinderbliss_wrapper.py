@@ -274,6 +274,10 @@ class PyFinderBlissAPI:
                 print(f"[FinderBliss] Device fetch failed (attempt {attempt+1}): {e}")
 
                 if attempt < self._max_retries - 1:
+                    try:
+                        await self._client.reset_connection()
+                    except Exception:
+                        pass
                     await self._async_ensure_authenticated()
                     await asyncio.sleep(self._retry_delay)
                     continue

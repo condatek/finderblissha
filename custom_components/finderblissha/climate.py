@@ -134,7 +134,9 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
         if dev is None:
             return None
         if self.hvac_mode == HVACMode.OFF:
-            return None
+            # Match Finder mobile app logic while OFF:
+            # winter -> 5 C, summer -> 35 C.
+            return self._attr_max_temp if self._get_season() == "SUMMER" else self._attr_min_temp
         set_point_raw = getattr(dev, "set_point", None)
         if set_point_raw is None or str(set_point_raw).upper() == "N/A":
             return None

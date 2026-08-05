@@ -44,8 +44,16 @@ class BlissClientAsync:
     async def close(self):
         if self._ws and not self._ws.closed:
             await self._ws.close()
+        self._ws = None
         if self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
+
+    async def reset_connection(self):
+        """Reset only the websocket so the next operation reconnects cleanly."""
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
 
     def _get_stamp(self):
         return datetime.datetime.now(datetime.timezone.utc).isoformat(
@@ -149,10 +157,7 @@ class BlissClientAsync:
             except asyncio.TimeoutError:
                 raise Exception("Timeout waiting for InitRequest acknowledgment.")
 
-    async def get_devices(self, ws_timeout: int = 15):
-        if not self._ws or self._ws.closed:
-            await self.connect_ws()
-
+    async def get_devices(self, ws_timeout: int = 15, reconnect_attempts: int = 2):
         sync_request = {
             "type": 1,
             "target": "SyncRequest",
@@ -172,29 +177,45 @@ class BlissClientAsync:
             ],
         }
 
-        await self._ws.send_str(json.dumps(sync_request) + "\x1e")
+        last_error: Exception | None = None
+        for attempt in range(reconnect_attempts + 1):
+            if not self._ws or self._ws.closed:
+                await self.connect_ws()
 
-        try:
-            while True:
-                msg = await asyncio.wait_for(self._ws.receive(), timeout=ws_timeout)
-                frames = await self._handle_message(msg)
+            try:
+                await self._ws.send_str(json.dumps(sync_request) + "\x1e")
 
-                for data in frames:
-                    if data.get("target") in ("SyncRequest", "SyncResponse") and "arguments" in data:
-                        for arg in data["arguments"]:
-                            if "serverPayload" in arg and arg["serverPayload"] is not None:
-                                self._last_server_sync_version = arg.get("serverSyncVersion", 0)
-                                _LOGGER.debug(
-                                    "Sync success, serverSyncVersion: %s",
-                                    self._last_server_sync_version,
-                                )
-                                payload = arg["serverPayload"]
-                                return parse_device_data(payload)
+                while True:
+                    msg = await asyncio.wait_for(self._ws.receive(), timeout=ws_timeout)
+                    frames = await self._handle_message(msg)
 
-        except asyncio.TimeoutError:
-            raise Exception(f"Timeout waiting for serverPayload after {ws_timeout} seconds.")
-        except ConnectionResetError:
-            raise Exception("Connection reset by server during device fetch.")
+                    for data in frames:
+                        if data.get("target") in ("SyncRequest", "SyncResponse") and "arguments" in data:
+                            for arg in data["arguments"]:
+                                if "serverPayload" in arg and arg["serverPayload"] is not None:
+                                    self._last_server_sync_version = arg.get("serverSyncVersion", 0)
+                                    _LOGGER.debug(
+                                        "Sync success, serverSyncVersion: %s",
+                                        self._last_server_sync_version,
+                                    )
+                                    payload = arg["serverPayload"]
+                                    return parse_device_data(payload)
+
+            except (asyncio.TimeoutError, ConnectionResetError, aiohttp.ClientError) as err:
+                last_error = err
+                _LOGGER.warning(
+                    "Device sync attempt %s/%s failed: %s. Resetting websocket and retrying.",
+                    attempt + 1,
+                    reconnect_attempts + 1,
+                    err,
+                )
+                await self.reset_connection()
+
+        if isinstance(last_error, asyncio.TimeoutError):
+            raise Exception(f"Timeout waiting for serverPayload after {ws_timeout} seconds.") from last_error
+        if isinstance(last_error, ConnectionResetError):
+            raise Exception("Connection reset by server during device fetch.") from last_error
+        raise Exception(f"Failed to fetch devices after websocket reconnect attempts: {last_error}")
 
     async def send_operation(self, device_data: dict, operation_key: str = "ALL", debug_responses: int = 3):
         if not self._ws or self._ws.closed:
