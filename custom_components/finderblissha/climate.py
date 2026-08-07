@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import zoneinfo
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -44,6 +46,53 @@ def _normalize_schedule_days(days: list) -> list:
             ]
         })
     return normalized
+
+
+def _scheduled_set_point(days: list, tz_name: str | None) -> float | None:
+    """Return the set point the schedule calls for right now, in C.
+
+    Day numbering is 1=Monday..7=Sunday, matching isoweekday(). The active
+    block is the last set point at or before now; before the first block of
+    the day it carries over from the most recent earlier day, wrapping the
+    week.
+    """
+    if not days:
+        return None
+
+    by_day: dict[int, list] = {}
+    for day_entry in days:
+        day_num = day_entry.get("day")
+        if day_num is None:
+            continue
+        by_day[day_num] = sorted(
+            day_entry.get("setPoints", []),
+            key=lambda sp: (sp.get("hour", 0), sp.get("minute", 0))
+        )
+    if not by_day:
+        return None
+
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name) if tz_name else None
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        tz = None
+    now = datetime.now(tz)
+
+    day = now.isoweekday()
+    minutes_now = now.hour * 60 + now.minute
+    for offset in range(7):
+        set_points = by_day.get(day, [])
+        if offset == 0:
+            set_points = [
+                sp for sp in set_points
+                if sp.get("hour", 0) * 60 + sp.get("minute", 0) <= minutes_now
+            ]
+        if set_points:
+            value = set_points[-1].get("setPoint")
+            if isinstance(value, (int, float)):
+                return value / 10
+        day = day - 1 or 7
+
+    return None
 
 
 async def async_setup_entry(
@@ -137,6 +186,19 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
             # Match Finder mobile app logic while OFF:
             # winter -> 5 C, summer -> 35 C.
             return self._attr_max_temp if self._get_season() == "SUMMER" else self._attr_min_temp
+
+        # In schedule mode the device-reported set point lags: it is what the
+        # thermostat last uploaded, so it keeps showing the frost point for a
+        # few sync cycles after leaving OFF, and every schedule step lands late.
+        # Resolve the schedule locally instead, as the mobile app does.
+        if str(getattr(dev, "mode", "")).lower() == "auto":
+            scheduled = _scheduled_set_point(
+                getattr(dev, "automatic_schedule", {}).get("days", []),
+                getattr(dev, "timezone", None),
+            )
+            if scheduled is not None:
+                return scheduled
+
         set_point_raw = getattr(dev, "set_point", None)
         if set_point_raw is None or str(set_point_raw).upper() == "N/A":
             return None
