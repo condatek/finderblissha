@@ -34,6 +34,13 @@ class BlissClientAsync:
         self._ws = None
         self._last_server_sync_version = 0
         self._debug = debug
+        # A single websocket serves every device, so two callers arriving
+        # together - a service call targeting two thermostats fans out to both
+        # entities in parallel - would both sit in ws.receive() and aiohttp
+        # raises "Concurrent call to receive() is not allowed". Every exchange
+        # is serialised through this lock; the _-prefixed variants below are
+        # the bodies that run with it already held.
+        self._ws_lock = asyncio.Lock()
 
     async def _ensure_session(self):
         if self._session is None or self._session.closed:
@@ -51,6 +58,10 @@ class BlissClientAsync:
 
     async def reset_connection(self):
         """Reset only the websocket so the next operation reconnects cleanly."""
+        async with self._ws_lock:
+            await self._reset_connection()
+
+    async def _reset_connection(self):
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
@@ -158,6 +169,10 @@ class BlissClientAsync:
                 raise Exception("Timeout waiting for InitRequest acknowledgment.")
 
     async def get_devices(self, ws_timeout: int = 15, reconnect_attempts: int = 2):
+        async with self._ws_lock:
+            return await self._get_devices(ws_timeout, reconnect_attempts)
+
+    async def _get_devices(self, ws_timeout: int = 15, reconnect_attempts: int = 2):
         sync_request = {
             "type": 1,
             "target": "SyncRequest",
@@ -209,7 +224,7 @@ class BlissClientAsync:
                     reconnect_attempts + 1,
                     err,
                 )
-                await self.reset_connection()
+                await self._reset_connection()
 
         if isinstance(last_error, asyncio.TimeoutError):
             raise Exception(f"Timeout waiting for serverPayload after {ws_timeout} seconds.") from last_error
@@ -218,11 +233,15 @@ class BlissClientAsync:
         raise Exception(f"Failed to fetch devices after websocket reconnect attempts: {last_error}")
 
     async def send_operation(self, device_data: dict, operation_key: str = "ALL", debug_responses: int = 3):
+        async with self._ws_lock:
+            await self._send_operation(device_data, operation_key, debug_responses)
+
+    async def _send_operation(self, device_data: dict, operation_key: str = "ALL", debug_responses: int = 3):
         if not self._ws or self._ws.closed:
             _LOGGER.debug("WebSocket closed before send_operation, reconnecting")
             await self.connect_ws()
             # Resync to get a valid _last_server_sync_version for the new session
-            await self.get_devices(ws_timeout=10)
+            await self._get_devices(ws_timeout=10)
 
         payload_to_send = dict(device_data)
 
