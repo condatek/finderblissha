@@ -22,6 +22,10 @@ from .device_parser import parse_device_data
 _LOGGER = logging.getLogger(__name__)
 
 
+class BlissCommandError(Exception):
+    """A command was not acknowledged, or not applied, by the Finder cloud."""
+
+
 class BlissClientAsync:
     """Asynchronous client for the Finder Bliss API."""
 
@@ -300,15 +304,21 @@ class BlissClientAsync:
             except ConnectionResetError:
                 raise Exception("Connection reset by server during command acknowledgement.")
 
-        if not new_version_received:
-            _LOGGER.warning("No ACK received from server after command")
-
         # Drain any follow-up messages the server sends after the ACK
         # (e.g. updated device data). If left in the buffer, the next
         # get_devices() call would pick them up as a partial response.
+        # Runs on the un-acknowledged path too, so a failed command still
+        # leaves a clean buffer for the retry.
         try:
             while True:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=1)
                 await self._handle_message(msg)
         except asyncio.TimeoutError:
             pass
+
+        # An un-acknowledged command is a dropped one. Returning normally here
+        # would report success for a write the server never took, which then
+        # surfaces a poll or two later as the old value coming back - looking
+        # exactly like somebody changed it by hand.
+        if not new_version_received:
+            raise BlissCommandError("Server did not acknowledge the command")

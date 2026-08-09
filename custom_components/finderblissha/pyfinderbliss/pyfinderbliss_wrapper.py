@@ -1,7 +1,55 @@
 import asyncio
 import json
+import logging
+import time
 from typing import Union
-from .client import BlissClientAsync
+from .client import BlissClientAsync, BlissCommandError
+from .device_parser import normalize_schedule_days
+
+_LOGGER = logging.getLogger(__name__)
+
+# A command is re-read from the server before it is reported as applied.
+COMMAND_ATTEMPTS = 2
+# The ACK means the frame was accepted, not that the new settings are queryable.
+COMMAND_VERIFY_DELAY = 1.5
+COMMAND_RETRY_DELAY = 3.0
+# How long a polled snapshot stays usable as the base for a command payload.
+SNAPSHOT_TTL = 15.0
+
+# What each command string should look like once the server has taken it.
+_EXPECTED_MODE = {
+    "OFF": "off",
+    "FROST": "off",
+    "AUTO": "auto",
+    "MANUAL": "manual",
+    "ECO": "eco",
+}
+
+
+def commanded_mode(device: 'BlissDevice') -> str | None:
+    """The mode the server has been told to hold.
+
+    Not the same question as `device.mode` on a BLISS2, where the mode is read
+    from `measures` - the thermostat's own echo, which only moves when it next
+    checks in, minutes later. Verifying a write against that would time out on
+    every command, so read the commanded setting instead. BLISS1 already
+    derives `mode` from `settings`, which is the commanded side.
+    """
+    if getattr(device, "tag", None) == "BLISS1":
+        return getattr(device, "mode", None)
+    setting = str(getattr(device, "mode_setting", "") or "").lower()
+    if not setting or setting == "n/a":
+        return None
+    return "off" if setting == "frost" else setting
+
+
+def _set_point_matches(reported, expected) -> bool:
+    """Compare set points that round-trip through tenths of a degree."""
+    try:
+        return abs(float(reported) - float(expected)) < 0.05
+    except (TypeError, ValueError):
+        return False
+
 
 class BlissDevice:
     def __init__(self, device_data):
@@ -223,6 +271,12 @@ class PyFinderBlissAPI:
         self._devices = []
         self._max_retries = max_retries
         self._retry_delay = retry_delay
+        # One command at a time per account: each one re-reads the snapshot it
+        # builds its payload from, and two commands interleaving would hand the
+        # second a snapshot the first has already superseded.
+        self._command_lock = asyncio.Lock()
+        self._snapshot_ts = 0.0
+        self._snapshot_dirty = True
 
     async def _async_ensure_authenticated(self):
         if hasattr(self._client, "is_logged_in") and self._client.is_logged_in:
@@ -263,15 +317,21 @@ class PyFinderBlissAPI:
         for attempt in range(self._max_retries):
             try:
                 devices_data = await self._client.get_devices()
-                self._devices = [BlissDevice(d) for d in devices_data]
+                devices = [BlissDevice(d) for d in devices_data]
 
-                for dev in self._devices:
+                for dev in devices:
                     dev._client = self._client
 
+                devices, partial = self._merge_known_devices(devices)
+                self._devices = devices
+                self._snapshot_ts = time.monotonic()
+                # Anything carried over still holds an older poll's syncVersion,
+                # so this snapshot must not be the base for the next command.
+                self._snapshot_dirty = partial
                 return self._devices
 
             except Exception as e:
-                print(f"[FinderBliss] Device fetch failed (attempt {attempt+1}): {e}")
+                _LOGGER.warning("Device fetch failed (attempt %s): %s", attempt + 1, e)
 
                 if attempt < self._max_retries - 1:
                     try:
@@ -286,47 +346,158 @@ class PyFinderBlissAPI:
 
         raise Exception("Failed to fetch devices after retries")
 
-    def _find_device_by_serial(self, serial: str) -> Union['BlissDevice', None]:
+    @staticmethod
+    def _device_key(device: 'BlissDevice'):
+        return getattr(device, "serial_number", None) or getattr(device, "name", None)
+
+    def _merge_known_devices(self, devices: list) -> tuple[list, bool]:
+        """Carry over devices the server left out of a partial payload.
+
+        A SyncRequest normally answers with the whole inventory, but the server
+        also pushes deltas naming only the device a command just touched, and
+        one of those arriving out of turn is indistinguishable from a full
+        answer here. Taken at face value the other thermostats look deleted:
+        their entities drop to unknown, and a command aimed at one of them
+        fails with "not found in tracked devices".
+        """
+        known = {self._device_key(d): d for d in self._devices}
+        if not known:
+            return devices, False
+
+        seen = {self._device_key(d) for d in devices}
+        missing = [device for key, device in known.items() if key not in seen]
+        if not missing:
+            return devices, False
+
+        _LOGGER.warning(
+            "Partial device payload: %s of %s devices returned, carrying over %s",
+            len(devices), len(known),
+            ", ".join(str(getattr(d, "name", "?")) for d in missing),
+        )
+        return devices + missing, True
+
+    def _find_device_by_serial(self, serial: str, devices=None) -> Union['BlissDevice', None]:
         return next(
-            (d for d in self._devices
+            (d for d in (self._devices if devices is None else devices)
              if getattr(d, 'serial_number', getattr(d, 'name')) == serial),
             None
         )
 
+    async def _async_fresh_devices(self):
+        """Return a snapshot recent enough to build a command payload from.
+
+        Every payload carries the device's own syncVersion from whichever poll
+        produced it. Sending one built on a superseded snapshot risks the
+        server discarding it as a conflict, which is indistinguishable from
+        success at this layer - so any successful write invalidates the
+        snapshot for the next command.
+        """
+        if self._snapshot_dirty or (time.monotonic() - self._snapshot_ts) > SNAPSHOT_TTL:
+            return await self.async_get_devices()
+        return self._devices
+
+    async def _async_run_command(self, device_serial: str, apply_fn, verify_fn, description: str):
+        """Apply a command and confirm the server took it, retrying if it did not.
+
+        An ACK only proves the frame was accepted; whether the settings landed
+        is a separate question. A lost write is otherwise invisible - the next
+        poll just reports the old value, which downstream reads as somebody
+        having changed it by hand. Returns the snapshot that confirmed it, so
+        the caller can publish state it has actually verified.
+        """
+        async with self._command_lock:
+            last_error: Exception | None = None
+
+            for attempt in range(1, COMMAND_ATTEMPTS + 1):
+                await self._async_ensure_authenticated()
+                devices = await self._async_fresh_devices()
+                device = self._find_device_by_serial(device_serial, devices)
+                if device is None:
+                    raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
+
+                try:
+                    await apply_fn(device)
+                except ValueError:
+                    # A bad argument will not become valid on a retry.
+                    raise
+                except Exception as err:
+                    last_error = err
+                    _LOGGER.warning(
+                        "%s failed on attempt %s/%s: %s",
+                        description, attempt, COMMAND_ATTEMPTS, err,
+                    )
+                else:
+                    self._snapshot_dirty = True
+                    await asyncio.sleep(COMMAND_VERIFY_DELAY)
+                    devices = await self.async_get_devices()
+                    confirmed = self._find_device_by_serial(device_serial, devices)
+                    if confirmed is not None and verify_fn(confirmed):
+                        return devices
+
+                    last_error = BlissCommandError(
+                        f"{description}: the server did not apply the command"
+                    )
+                    _LOGGER.warning(
+                        "%s was not confirmed on attempt %s/%s",
+                        description, attempt, COMMAND_ATTEMPTS,
+                    )
+
+                if attempt < COMMAND_ATTEMPTS:
+                    await asyncio.sleep(COMMAND_RETRY_DELAY)
+
+            raise last_error
+
     async def async_set_temperature(self, device_serial: str, temperature: float):
-        await self._async_ensure_authenticated()
-        device = self._find_device_by_serial(device_serial)
-        if not device:
-            raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
-        await device.set_setpoint(value=temperature)
+        return await self._async_run_command(
+            device_serial,
+            lambda device: device.set_setpoint(value=temperature),
+            lambda device: _set_point_matches(device.manual_set_point, temperature),
+            f"Set point {temperature}",
+        )
 
     async def async_set_mode(self, device_serial: str, mode: str):
-        await self._async_ensure_authenticated()
-        device = self._find_device_by_serial(device_serial)
-        if not device:
-            raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
-        await device.set_mode(mode=mode)
+        expected = _EXPECTED_MODE.get(mode.upper())
+        return await self._async_run_command(
+            device_serial,
+            lambda device: device.set_mode(mode=mode),
+            lambda device: commanded_mode(device) == expected,
+            f"Mode {mode.upper()}",
+        )
 
     async def async_set_season(self, device_serial: str, season: str):
-        await self._async_ensure_authenticated()
-        device = self._find_device_by_serial(device_serial)
-        if not device:
-            raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
-        await device.set_season(season=season)
+        expected = season.upper()
+        return await self._async_run_command(
+            device_serial,
+            lambda device: device.set_season(season=season),
+            lambda device: str(device.season or "").upper() == expected,
+            f"Season {expected}",
+        )
 
     async def async_set_update_step(self, device_serial: str, minutes: int):
-        await self._async_ensure_authenticated()
-        device = self._find_device_by_serial(device_serial)
-        if not device:
-            raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
-        await device.set_update_step(minutes=minutes)
+        return await self._async_run_command(
+            device_serial,
+            lambda device: device.set_update_step(minutes=minutes),
+            lambda device: device.update_step == minutes,
+            f"Sync interval {minutes}",
+        )
 
     async def async_set_schedule_preset(self, device_serial: str, preset_name: str):
-        await self._async_ensure_authenticated()
-        device = self._find_device_by_serial(device_serial)
-        if not device:
-            raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
-        await device.set_schedule_preset(preset_name=preset_name)
+        def _applied(device: 'BlissDevice') -> bool:
+            target = next(
+                (s for s in device.schedules_parsed if s.get("name") == preset_name),
+                None,
+            )
+            if target is None:
+                return False
+            active = normalize_schedule_days(device.automatic_schedule.get("days", []))
+            return active == normalize_schedule_days(target.get("days", []))
+
+        return await self._async_run_command(
+            device_serial,
+            lambda device: device.set_schedule_preset(preset_name=preset_name),
+            _applied,
+            f"Schedule preset {preset_name!r}",
+        )
 
     async def async_close(self):
         await self._client.close()

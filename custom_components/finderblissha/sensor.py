@@ -25,6 +25,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
+from .pyfinderbliss.device_parser import normalize_schedule_days
 from .pyfinderbliss.pyfinderbliss_wrapper import BlissDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -249,10 +250,9 @@ def _format_schedule(auto_schedule: dict, schedules_parsed: list) -> tuple[str |
         return None, {}
 
     active_preset = None
-    from .climate import _normalize_schedule_days
-    current_norm = _normalize_schedule_days(days)
+    current_norm = normalize_schedule_days(days)
     for sched in schedules_parsed:
-        if _normalize_schedule_days(sched.get("days", [])) == current_norm:
+        if normalize_schedule_days(sched.get("days", [])) == current_norm:
             active_preset = sched.get("name")
             break
 

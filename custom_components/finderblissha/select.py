@@ -8,6 +8,7 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
@@ -99,5 +100,11 @@ class FinderBlissUpdateProfileSelect(CoordinatorEntity, SelectEntity):
         if level is None:
             _LOGGER.error("Unknown sync profile: %s", option)
             return
-        await self._api.async_set_update_step(self._device_serial, level)
-        await self.coordinator.async_request_refresh()
+        try:
+            devices = await self._api.async_set_update_step(self._device_serial, level)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Finder Bliss command failed for {self._device_serial}: {err}"
+            ) from err
+        # The API returns the snapshot that confirmed the change.
+        self.coordinator.async_set_updated_data(devices)
