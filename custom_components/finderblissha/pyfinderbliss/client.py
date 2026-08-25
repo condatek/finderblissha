@@ -22,6 +22,10 @@ from .device_parser import parse_device_data
 _LOGGER = logging.getLogger(__name__)
 
 
+class BlissCommandError(Exception):
+    """A command was not acknowledged, or not applied, by the Finder cloud."""
+
+
 class BlissClientAsync:
     """Asynchronous client for the Finder Bliss API."""
 
@@ -34,6 +38,13 @@ class BlissClientAsync:
         self._ws = None
         self._last_server_sync_version = 0
         self._debug = debug
+        # A single websocket serves every device, so two callers arriving
+        # together - a service call targeting two thermostats fans out to both
+        # entities in parallel - would both sit in ws.receive() and aiohttp
+        # raises "Concurrent call to receive() is not allowed". Every exchange
+        # is serialised through this lock; the _-prefixed variants below are
+        # the bodies that run with it already held.
+        self._ws_lock = asyncio.Lock()
 
     async def _ensure_session(self):
         if self._session is None or self._session.closed:
@@ -44,8 +55,20 @@ class BlissClientAsync:
     async def close(self):
         if self._ws and not self._ws.closed:
             await self._ws.close()
+        self._ws = None
         if self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
+
+    async def reset_connection(self):
+        """Reset only the websocket so the next operation reconnects cleanly."""
+        async with self._ws_lock:
+            await self._reset_connection()
+
+    async def _reset_connection(self):
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
 
     def _get_stamp(self):
         return datetime.datetime.now(datetime.timezone.utc).isoformat(
@@ -149,10 +172,11 @@ class BlissClientAsync:
             except asyncio.TimeoutError:
                 raise Exception("Timeout waiting for InitRequest acknowledgment.")
 
-    async def get_devices(self, ws_timeout: int = 15):
-        if not self._ws or self._ws.closed:
-            await self.connect_ws()
+    async def get_devices(self, ws_timeout: int = 15, reconnect_attempts: int = 2):
+        async with self._ws_lock:
+            return await self._get_devices(ws_timeout, reconnect_attempts)
 
+    async def _get_devices(self, ws_timeout: int = 15, reconnect_attempts: int = 2):
         sync_request = {
             "type": 1,
             "target": "SyncRequest",
@@ -172,36 +196,56 @@ class BlissClientAsync:
             ],
         }
 
-        await self._ws.send_str(json.dumps(sync_request) + "\x1e")
+        last_error: Exception | None = None
+        for attempt in range(reconnect_attempts + 1):
+            if not self._ws or self._ws.closed:
+                await self.connect_ws()
 
-        try:
-            while True:
-                msg = await asyncio.wait_for(self._ws.receive(), timeout=ws_timeout)
-                frames = await self._handle_message(msg)
+            try:
+                await self._ws.send_str(json.dumps(sync_request) + "\x1e")
 
-                for data in frames:
-                    if data.get("target") in ("SyncRequest", "SyncResponse") and "arguments" in data:
-                        for arg in data["arguments"]:
-                            if "serverPayload" in arg and arg["serverPayload"] is not None:
-                                self._last_server_sync_version = arg.get("serverSyncVersion", 0)
-                                _LOGGER.debug(
-                                    "Sync success, serverSyncVersion: %s",
-                                    self._last_server_sync_version,
-                                )
-                                payload = arg["serverPayload"]
-                                return parse_device_data(payload)
+                while True:
+                    msg = await asyncio.wait_for(self._ws.receive(), timeout=ws_timeout)
+                    frames = await self._handle_message(msg)
 
-        except asyncio.TimeoutError:
-            raise Exception(f"Timeout waiting for serverPayload after {ws_timeout} seconds.")
-        except ConnectionResetError:
-            raise Exception("Connection reset by server during device fetch.")
+                    for data in frames:
+                        if data.get("target") in ("SyncRequest", "SyncResponse") and "arguments" in data:
+                            for arg in data["arguments"]:
+                                if "serverPayload" in arg and arg["serverPayload"] is not None:
+                                    self._last_server_sync_version = arg.get("serverSyncVersion", 0)
+                                    _LOGGER.debug(
+                                        "Sync success, serverSyncVersion: %s",
+                                        self._last_server_sync_version,
+                                    )
+                                    payload = arg["serverPayload"]
+                                    return parse_device_data(payload)
+
+            except (asyncio.TimeoutError, ConnectionResetError, aiohttp.ClientError) as err:
+                last_error = err
+                _LOGGER.warning(
+                    "Device sync attempt %s/%s failed: %s. Resetting websocket and retrying.",
+                    attempt + 1,
+                    reconnect_attempts + 1,
+                    err,
+                )
+                await self._reset_connection()
+
+        if isinstance(last_error, asyncio.TimeoutError):
+            raise Exception(f"Timeout waiting for serverPayload after {ws_timeout} seconds.") from last_error
+        if isinstance(last_error, ConnectionResetError):
+            raise Exception("Connection reset by server during device fetch.") from last_error
+        raise Exception(f"Failed to fetch devices after websocket reconnect attempts: {last_error}")
 
     async def send_operation(self, device_data: dict, operation_key: str = "ALL", debug_responses: int = 3):
+        async with self._ws_lock:
+            await self._send_operation(device_data, operation_key, debug_responses)
+
+    async def _send_operation(self, device_data: dict, operation_key: str = "ALL", debug_responses: int = 3):
         if not self._ws or self._ws.closed:
             _LOGGER.debug("WebSocket closed before send_operation, reconnecting")
             await self.connect_ws()
             # Resync to get a valid _last_server_sync_version for the new session
-            await self.get_devices(ws_timeout=10)
+            await self._get_devices(ws_timeout=10)
 
         payload_to_send = dict(device_data)
 
@@ -260,15 +304,21 @@ class BlissClientAsync:
             except ConnectionResetError:
                 raise Exception("Connection reset by server during command acknowledgement.")
 
-        if not new_version_received:
-            _LOGGER.warning("No ACK received from server after command")
-
         # Drain any follow-up messages the server sends after the ACK
         # (e.g. updated device data). If left in the buffer, the next
         # get_devices() call would pick them up as a partial response.
+        # Runs on the un-acknowledged path too, so a failed command still
+        # leaves a clean buffer for the retry.
         try:
             while True:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=1)
                 await self._handle_message(msg)
         except asyncio.TimeoutError:
             pass
+
+        # An un-acknowledged command is a dropped one. Returning normally here
+        # would report success for a write the server never took, which then
+        # surfaces a poll or two later as the old value coming back - looking
+        # exactly like somebody changed it by hand.
+        if not new_version_received:
+            raise BlissCommandError("Server did not acknowledge the command")

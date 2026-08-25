@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import zoneinfo
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -15,6 +18,7 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
@@ -23,27 +27,62 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
+from .pyfinderbliss.device_parser import normalize_schedule_days
 from .pyfinderbliss.pyfinderbliss_wrapper import BlissDevice, PyFinderBlissAPI
 
 _LOGGER = logging.getLogger(__name__)
 
+# Ceiling on how long a commanded value stays visible without confirmation.
+# Commands confirm and clear it themselves; this only bounds the damage if the
+# task running one is cancelled before it can.
+OPTIMISTIC_TIMEOUT = 90
 
-def _normalize_schedule_days(days: list) -> list:
-    """Normalize schedule days for reliable comparison."""
-    normalized = []
-    for day_entry in sorted(days, key=lambda d: d.get("day", 0)):
-        set_points = sorted(
+
+def _scheduled_set_point(days: list, tz_name: str | None) -> float | None:
+    """Return the set point the schedule calls for right now, in C.
+
+    Day numbering is 1=Monday..7=Sunday, matching isoweekday(). The active
+    block is the last set point at or before now; before the first block of
+    the day it carries over from the most recent earlier day, wrapping the
+    week.
+    """
+    if not days:
+        return None
+
+    by_day: dict[int, list] = {}
+    for day_entry in days:
+        day_num = day_entry.get("day")
+        if day_num is None:
+            continue
+        by_day[day_num] = sorted(
             day_entry.get("setPoints", []),
             key=lambda sp: (sp.get("hour", 0), sp.get("minute", 0))
         )
-        normalized.append({
-            "day": day_entry.get("day"),
-            "setPoints": [
-                {"hour": sp.get("hour"), "minute": sp.get("minute"), "setPoint": sp.get("setPoint")}
-                for sp in set_points
+    if not by_day:
+        return None
+
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name) if tz_name else None
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        tz = None
+    now = datetime.now(tz)
+
+    day = now.isoweekday()
+    minutes_now = now.hour * 60 + now.minute
+    for offset in range(7):
+        set_points = by_day.get(day, [])
+        if offset == 0:
+            set_points = [
+                sp for sp in set_points
+                if sp.get("hour", 0) * 60 + sp.get("minute", 0) <= minutes_now
             ]
-        })
-    return normalized
+        if set_points:
+            value = set_points[-1].get("setPoint")
+            if isinstance(value, (int, float)):
+                return value / 10
+        day = day - 1 or 7
+
+    return None
 
 
 async def async_setup_entry(
@@ -95,6 +134,8 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
         self._device_serial = getattr(device, "serial_number", getattr(device, "name", None))
         self._attr_unique_id = f"finderbliss_climate_{self._device_serial}"
         self._command_lock = asyncio.Lock()
+        # Device attribute -> (commanded value, expiry). See _device_value.
+        self._optimistic: dict[str, tuple[Any, float]] = {}
 
     @property
     def supported_features(self) -> ClimateEntityFeature:
@@ -116,9 +157,42 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
                 return d
         return None
 
-    def _get_season(self) -> str:
+    def _device_value(self, name: str, default: Any = None) -> Any:
+        """Read a device attribute, preferring a command still in flight.
+
+        Every coordinator refresh rebuilds the BlissDevice objects from
+        scratch, so a value written onto them optimistically is gone at the
+        next poll. Held on the entity instead, the commanded value stays put
+        until the command confirms or fails - so a slow write never surfaces
+        as a state change looking like somebody turned the zone back on.
+        """
+        pending = self._optimistic.get(name)
+        if pending is not None:
+            value, expires = pending
+            if time.monotonic() < expires:
+                return value
+            del self._optimistic[name]
+
         dev = self._find_device()
-        return getattr(dev, "season", "WINTER") if dev else "WINTER"
+        if dev is None:
+            return default
+        value = getattr(dev, name, default)
+        return default if value is None else value
+
+    def _set_optimistic(self, values: dict[str, Any] | None) -> None:
+        if not values:
+            return
+        expires = time.monotonic() + OPTIMISTIC_TIMEOUT
+        for key, value in values.items():
+            self._optimistic[key] = (value, expires)
+        self.async_write_ha_state()
+
+    def _clear_optimistic(self, values: dict[str, Any] | None) -> None:
+        for key in values or {}:
+            self._optimistic.pop(key, None)
+
+    def _get_season(self) -> str:
+        return self._device_value("season", "WINTER")
 
     # --- Properties ---
 
@@ -134,8 +208,23 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
         if dev is None:
             return None
         if self.hvac_mode == HVACMode.OFF:
-            return None
-        set_point_raw = getattr(dev, "set_point", None)
+            # Match Finder mobile app logic while OFF:
+            # winter -> 5 C, summer -> 35 C.
+            return self._attr_max_temp if self._get_season() == "SUMMER" else self._attr_min_temp
+
+        # In schedule mode the device-reported set point lags: it is what the
+        # thermostat last uploaded, so it keeps showing the frost point for a
+        # few sync cycles after leaving OFF, and every schedule step lands late.
+        # Resolve the schedule locally instead, as the mobile app does.
+        if str(self._device_value("mode", "")).lower() == "auto":
+            scheduled = _scheduled_set_point(
+                self._device_value("automatic_schedule", {}).get("days", []),
+                getattr(dev, "timezone", None),
+            )
+            if scheduled is not None:
+                return scheduled
+
+        set_point_raw = self._device_value("set_point")
         if set_point_raw is None or str(set_point_raw).upper() == "N/A":
             return None
         try:
@@ -145,11 +234,8 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def hvac_mode(self) -> HVACMode:
-        dev = self._find_device()
-        if dev is None:
-            return HVACMode.OFF
-        mode = getattr(dev, "mode", "off")
-        if mode == "off":
+        mode = self._device_value("mode")
+        if mode is None or str(mode).lower() == "off":
             return HVACMode.OFF
         # Both "auto" and "manual" resolve to HEAT/COOL based on season
         season = self._get_season()
@@ -182,16 +268,15 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
         dev = self._find_device()
         if dev is None:
             return None
-        mode = getattr(dev, "mode", "off")
-        if mode != "auto":
+        if str(self._device_value("mode", "")).lower() != "auto":
             return None
 
         schedules = getattr(dev, "schedules_parsed", [])
-        current_auto = getattr(dev, "automatic_schedule", {})
+        current_auto = self._device_value("automatic_schedule", {})
         if schedules and current_auto:
-            current_days = _normalize_schedule_days(current_auto.get("days", []))
+            current_days = normalize_schedule_days(current_auto.get("days", []))
             for sched in schedules:
-                preset_days = _normalize_schedule_days(sched.get("days", []))
+                preset_days = normalize_schedule_days(sched.get("days", []))
                 if current_days == preset_days:
                     return sched.get("name")
         return None
@@ -213,29 +298,46 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
         if not dev:
             return {}
         return {
-            "season": getattr(dev, "season", None),
-            "operating_mode": getattr(dev, "mode", None),
+            "season": self._device_value("season"),
+            "operating_mode": self._device_value("mode"),
         }
 
     # --- Control Methods ---
 
-    async def _async_execute_api_command(self, api_coroutine, *args, **kwargs) -> None:
-        """Execute an API command and update HA state optimistically.
-
-        Serialized with a lock so concurrent commands from Apple Home
-        (e.g. HVAC mode + temperature at the same time) don't race.
-
-        The wrapper methods (set_mode, set_setpoint, etc.) update the
-        BlissDevice attributes in-place.  These are the same objects in
-        coordinator.data, so the entity properties immediately reflect
-        the new values.  We push that state to HA right away instead of
-        triggering a coordinator refresh, which would send a SyncRequest
-        over the same WebSocket and risk reading stale buffered messages.
-        The regular polling interval syncs the full state from the server.
-        """
+    async def _async_execute_api_command(self, api_coroutine, *args, optimistic=None, **kwargs) -> None:
+        """Execute an API command, serialized against other commands on this entity."""
         async with self._command_lock:
-            await api_coroutine(*args, **kwargs)
-        self.async_write_ha_state()
+            await self._async_command(api_coroutine, *args, optimistic=optimistic, **kwargs)
+
+    async def _async_command(self, api_coroutine, *args, optimistic=None, **kwargs) -> None:
+        """Run one command with the entity lock already held.
+
+        The commanded value goes up straight away so Apple Home reacts at once,
+        but it is the API layer that decides whether the command counts: it
+        returns only once the server has been read back and agrees. That
+        verified snapshot is pushed into the coordinator instead of waiting up
+        to a poll interval for the same news.
+
+        On failure the commanded value is dropped and the error raised. A
+        command the server silently declined must not read as applied - that is
+        what makes a lost write show up minutes later as a phantom manual
+        change.
+        """
+        self._set_optimistic(optimistic)
+        try:
+            devices = await api_coroutine(*args, **kwargs)
+        except Exception as err:
+            self._clear_optimistic(optimistic)
+            self.async_write_ha_state()
+            raise HomeAssistantError(
+                f"Finder Bliss command failed for {self._device_serial}: {err}"
+            ) from err
+
+        self._clear_optimistic(optimistic)
+        if devices:
+            self.coordinator.async_set_updated_data(devices)
+        else:
+            self.async_write_ha_state()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set HVAC mode.
@@ -247,31 +349,34 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
         """
         if hvac_mode == HVACMode.OFF:
             await self._async_execute_api_command(
-                self._api.async_set_mode, self._device_serial, "OFF"
+                self._api.async_set_mode, self._device_serial, "OFF",
+                optimistic={"mode": "off"},
             )
             return
 
         if hvac_mode == HVACMode.AUTO:
             # Resume schedule — after refresh, hvac_mode resolves to HEAT/COOL
             await self._async_execute_api_command(
-                self._api.async_set_mode, self._device_serial, "AUTO"
+                self._api.async_set_mode, self._device_serial, "AUTO",
+                optimistic={"mode": "auto"},
             )
             return
 
-        # HEAT or COOL → set season (if needed) + manual mode
-        # Both commands run inside one lock acquisition so no intermediate
-        # coordinator refresh can replace the device objects between them.
-        dev = self._find_device()
-        current_season = getattr(dev, "season", "WINTER") if dev else "WINTER"
+        # HEAT or COOL → set season (if needed) + manual mode.
+        # Both commands run inside one lock acquisition so a second command on
+        # this entity cannot land between them.
+        season = "SUMMER" if hvac_mode == HVACMode.COOL else "WINTER"
 
         async with self._command_lock:
-            if hvac_mode == HVACMode.COOL and current_season != "SUMMER":
-                await self._api.async_set_season(self._device_serial, "SUMMER")
-            elif hvac_mode == HVACMode.HEAT and current_season != "WINTER":
-                await self._api.async_set_season(self._device_serial, "WINTER")
-
-            await self._api.async_set_mode(self._device_serial, "MANUAL")
-        self.async_write_ha_state()
+            if self._get_season() != season:
+                await self._async_command(
+                    self._api.async_set_season, self._device_serial, season,
+                    optimistic={"season": season},
+                )
+            await self._async_command(
+                self._api.async_set_mode, self._device_serial, "MANUAL",
+                optimistic={"mode": "manual"},
+            )
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         target_temp = kwargs.get(ATTR_TEMPERATURE)
@@ -285,14 +390,23 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
             await self.async_set_hvac_mode(target_hvac)
 
         await self._async_execute_api_command(
-            self._api.async_set_temperature, self._device_serial, target_temp
+            self._api.async_set_temperature, self._device_serial, target_temp,
+            optimistic={"set_point": target_temp, "mode": "manual"},
         )
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Apply a named schedule and switch to auto mode."""
+        dev = self._find_device()
+        schedule = next(
+            (s for s in getattr(dev, "schedules_parsed", []) if s.get("name") == preset_mode),
+            None,
+        ) if dev else None
+
         await self._async_execute_api_command(
-            self._api.async_set_schedule_preset, self._device_serial, preset_mode
+            self._api.async_set_schedule_preset, self._device_serial, preset_mode,
+            optimistic={"automatic_schedule": {"days": schedule["days"]}} if schedule else None,
         )
         await self._async_execute_api_command(
-            self._api.async_set_mode, self._device_serial, "AUTO"
+            self._api.async_set_mode, self._device_serial, "AUTO",
+            optimistic={"mode": "auto"},
         )

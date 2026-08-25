@@ -1,7 +1,7 @@
 {
   "domain": "finderblissha",
   "name": "Finder Bliss Thermostats",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "documentation": "https://github.com/condatek/finderblissha",
   "issue_tracker": "https://github.com/condatek/finderblissha/issues",
   "requirements": [],

@@ -38,14 +38,38 @@ def determine_bliss1_mode(settings: dict) -> str:
 
 
 def determine_bliss2_mode(measures: dict) -> str:
-    """Determine operating mode for BLISS2 devices."""
+    """Determine operating mode for BLISS2 devices.
+
+    Lower case to match determine_bliss1_mode: consumers compare against
+    "off"/"auto"/"manual", and the setters write the same lower-case values
+    back onto the device, so a BLISS2 reporting "OFF" here never matched and
+    flipped case on every command.
+    """
     mode = measures.get("mode", 0)
     return {
-        0: "OFF",
-        1: "AUTO",
-        2: "OFF",
-        3: "MANUAL"
-    }.get(mode, "UNKNOWN")
+        0: "off",
+        1: "auto",
+        2: "off",
+        3: "manual"
+    }.get(mode, "unknown")
+
+
+def normalize_schedule_days(days: list) -> list:
+    """Normalize schedule days for reliable comparison."""
+    normalized = []
+    for day_entry in sorted(days or [], key=lambda d: d.get("day", 0)):
+        set_points = sorted(
+            day_entry.get("setPoints", []),
+            key=lambda sp: (sp.get("hour", 0), sp.get("minute", 0))
+        )
+        normalized.append({
+            "day": day_entry.get("day"),
+            "setPoints": [
+                {"hour": sp.get("hour"), "minute": sp.get("minute"), "setPoint": sp.get("setPoint")}
+                for sp in set_points
+            ]
+        })
+    return normalized
 
 
 
@@ -102,7 +126,7 @@ def parse_device(device: dict) -> dict:
         else:
             set_point = parse_set_point(measures_parsed.get("loggerSetPoint"))
     else:
-        if mode == "MANUAL":
+        if mode == "manual":
             set_point = parse_set_point(
                 settings_parsed.get("primary", {}).get("manualSetPoint")
             )

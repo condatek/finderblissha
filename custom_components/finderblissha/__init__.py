@@ -8,6 +8,7 @@ import logging
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.config_entries import ConfigEntry
 
 from .const import DOMAIN, PLATFORMS, DEFAULT_SCAN_INTERVAL
@@ -71,3 +72,29 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.data.pop(DOMAIN)
 
     return unload_ok
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: DeviceEntry
+) -> bool:
+    """Allow deleting a device from the UI only if it is no longer on the account.
+
+    Thermostats still reported by the API are managed by the integration and
+    must not be removed by hand (they would just reappear). A device whose
+    serial is no longer returned (e.g. a thermostat replaced or renamed
+    upstream, leaving a stale entry behind) can be deleted.
+    """
+    known_serials: set[str] = set()
+    entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
+    if entry_data and (coordinator := entry_data.get("coordinator")) and coordinator.data:
+        for device in coordinator.data:
+            serial = getattr(device, "serial_number", None) or getattr(device, "name", None)
+            if serial is not None:
+                known_serials.add(str(serial))
+
+    # Removable when none of this device's identifiers map to a live thermostat.
+    return not any(
+        str(identifier[1]) in known_serials
+        for identifier in device_entry.identifiers
+        if identifier[0] == DOMAIN
+    )
