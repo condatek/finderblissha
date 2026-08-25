@@ -25,7 +25,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
-from .pyfinderbliss.device_parser import normalize_schedule_days
+from .pyfinderbliss.device_parser import normalize_schedule_days, parse_set_point
 from .pyfinderbliss.pyfinderbliss_wrapper import BlissDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -269,7 +269,7 @@ def _format_schedule(auto_schedule: dict, schedules_parsed: list) -> tuple[str |
         for i, sp in enumerate(set_points):
             hour = sp.get("hour", 0)
             minute = sp.get("minute", 0)
-            temp = sp.get("setPoint", 0) / 10
+            temp = parse_set_point(sp.get("setPoint"))
 
             start = f"{hour:02d}:{minute:02d}"
             if i + 1 < len(set_points):
