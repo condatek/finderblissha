@@ -57,14 +57,14 @@ def test_identifiers_and_account_data_are_redacted(caplog, fresh_capture):
     fresh_capture.setLevel(logging.DEBUG)
     caplog.set_level(logging.DEBUG, logger=capture.CAPTURE_LOGGER_NAME)
     device = bliss2_device(extra_settings={
-        "wifi": {"ssid": "home-net", "macAddress": "aa:bb:cc:dd:ee:ff"},
+        "wifi": {"ssid": "home-net", "macAddress": "aa:bb:cc:dd:ee:ff", "wifiPwd": "hunter22", "psk": "pskvalue1"},
         "contact": "someone@example.com",
         "ownerId": "0f8fad5b-d9cb-469f-a165-70867728950e",
     })
     capture.on_sync(payload(device))
     text = "\n".join(r.getMessage() for r in caplog.records)
     for secret in ("TEST0001", "dev-handle-1", "house-1", "Living room", "home-net",
-                   "aa:bb:cc", "someone@example.com", "0f8fad5b"):
+                   "aa:bb:cc", "someone@example.com", "0f8fad5b", "hunter22", "pskvalue1"):
         assert secret not in text
     assert "settings.wifi.ssid = <redacted>" in text
     # Measures are reduced to the command-relevant fields.
@@ -100,3 +100,43 @@ def test_capture_never_raises(fresh_capture):
     capture.on_sync("not json")
     capture.on_sync({"devices": "nope"})
     capture.on_answer({"arguments": None})
+
+
+def test_identifier_shaped_keys_and_location_fields_are_redacted(caplog, fresh_capture):
+    fresh_capture.setLevel(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger=capture.CAPTURE_LOGGER_NAME)
+    device = bliss2_device(extra_settings={
+        "linked": {"0f8fad5bd9cb469fa16570867728950e": {"on": True}, "someone@example.com": 1},
+        "site": {"city": "Somewhere", "zipCode": "00000", "street": "1 Test Lane", "label": "Upstairs"},
+    })
+    capture.on_sync(payload(device))
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    for secret in ("0f8fad5b", "someone@example.com", "Somewhere", "00000", "Test Lane", "Upstairs", "Europe/Rome"):
+        assert secret not in text
+    assert "settings.linked.<opaque>.on = true" in text
+    assert "tz = <redacted>" in text
+
+
+def test_settings_come_before_long_schedule_lists(caplog, fresh_capture):
+    fresh_capture.setLevel(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger=capture.CAPTURE_LOGGER_NAME)
+    device = bliss2_device()
+    device["schedules"] = json.dumps([{"days": [{"day": d, "setPoints": [{"hour": h, "minute": 0, "setPoint": 190}
+                                                    for h in range(12)]} for d in range(1, 8)]}] * 3)
+    capture.on_sync(payload(device))
+    text = caplog.records[-1].getMessage()
+    assert "more lines" in text
+    assert "settings.automaticSchedule.days[6].setPoints[2].setPoint.value = 190" in text
+    assert text.index("settings.") < text.index("schedules[")
+
+
+def test_a_level_set_by_name_before_import_is_kept():
+    import importlib
+
+    logger = logging.getLogger(capture.CAPTURE_LOGGER_NAME)
+    logger.setLevel(logging.DEBUG)
+    importlib.reload(capture)
+    assert logger.level == logging.DEBUG
+    logger.setLevel(logging.NOTSET)
+    importlib.reload(capture)
+    assert logger.level == logging.WARNING

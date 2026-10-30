@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging
 import math
 
+from .device_parser import schedule_set_point_value
+
 _LOGGER = logging.getLogger(__name__)
 
 MIN_TEMP = 5.0
@@ -155,7 +157,7 @@ def shape_like_device(days: list, current_days: list | None, tag: str | None = N
         return days
     return [
         {"day": day["day"], "setPoints": [
-            {"hour": sp["hour"], "minute": sp["minute"], "setPoint": {**template, "value": sp["setPoint"]}}
+            {"hour": sp["hour"], "minute": sp["minute"], "setPoint": {**template, "value": schedule_set_point_value(sp["setPoint"])}}
             for sp in day["setPoints"]
         ]}
         for day in days

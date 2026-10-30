@@ -8,15 +8,17 @@ Developer tools:
       custom_components.finderblissha.capture: debug
 
 Debug on the integration's own logger does not turn it on: the level is
-pinned to WARNING here until set by name. Then:
+pinned to WARNING here unless it was already set by name (YAML logs: or
+logger.set_level). Then:
 
 - the first sync logs each device's state, flattened to path = value;
 - every later sync logs only the paths that changed;
 - every write logs the paths it changes against the last sync, and the
   fields of the server's answer.
 
-Device identifiers, names, account data and anything resembling them are
-redacted, and devices are labelled by position and model only. Measures are
+Device identifiers, names, account data, location and free-text fields,
+and anything resembling them (keys included) are redacted; the time zone
+shows only as <redacted>. Devices are labelled by position and model only. Measures are
 reduced to the few fields that matter for commands. Payload sizes are
 bounded. Nothing is logged with the logger at its default level.
 """
@@ -29,14 +31,20 @@ import re
 
 CAPTURE_LOGGER_NAME = "custom_components.finderblissha.capture"
 _LOGGER = logging.getLogger(CAPTURE_LOGGER_NAME)
-_LOGGER.setLevel(logging.WARNING)
-_LOGGER.propagate = True
+# Pin it off unless a level was set for it by name (logger: logs: in YAML is
+# applied before this module loads); otherwise it would inherit debug from
+# the integration's logger.
+if _LOGGER.level == logging.NOTSET:
+    _LOGGER.setLevel(logging.WARNING)
 
 REDACTED = "<redacted>"
+# Must not itself match _SENSITIVE_KEY, or the subtree below it would vanish too.
+REDACTED_KEY = "<opaque>"
 # Key names that can identify a person, an account, a place or a device.
 _SENSITIVE_KEY = re.compile(
     r"(name|serial|handle|house|gateway|user|mail|token|pass|secret|key|ssid|"
-    r"mac|ip$|ipaddr|address|lat|lon|gps|phone|owner|account|client|^id$|id$)",
+    r"mac|ip$|ipaddr|address|lat|lon|gps|phone|owner|account|client|^id$|id$|"
+    r"pwd|psk|cred|auth|city|zip|postal|street|country|location|place|geo|pin|code|label|descr|note|comment|tz$|zone)",
     re.IGNORECASE,
 )
 # Values that look like an e-mail address or a long opaque identifier.
@@ -75,6 +83,12 @@ def _scalar(key: str, value) -> str:
     return text if len(text) <= MAX_VALUE else text[:MAX_VALUE] + "..."
 
 
+def _path_key(key) -> str:
+    """A dict key as it appears in a path; keys that look like identifiers are hidden."""
+    text = str(key)
+    return REDACTED_KEY if _SENSITIVE_VALUE.search(text) else text
+
+
 def _flatten(value, path: str, out: dict[str, str], key: str = "") -> None:
     value = _load(value)
     if key and _SENSITIVE_KEY.search(key):
@@ -83,7 +97,8 @@ def _flatten(value, path: str, out: dict[str, str], key: str = "") -> None:
         if not value:
             out[path] = "{}"
         for k, v in value.items():
-            _flatten(v, f"{path}.{k}" if path else str(k), out, str(k))
+            name = _path_key(k)
+            _flatten(v, f"{path}.{name}" if path else name, out, name)
     elif isinstance(value, list):
         if not value:
             out[path] = "[]"
@@ -126,9 +141,19 @@ def _emit(prefix: str, lines: list[str]) -> None:
     _LOGGER.debug("%s\n%s", prefix, "\n".join(lines) if lines else "(no changes)")
 
 
+_SECTION_ORDER = ("settings", "measures")
+
+
+def _order(path: str):
+    """Settings first, so a long schedules list cannot push them past MAX_LINES."""
+    head = path.split(".", 1)[0].split("[", 1)[0]
+    rank = _SECTION_ORDER.index(head) if head in _SECTION_ORDER else (3 if head == "schedules" else 2)
+    return rank, path
+
+
 def _diff(old: dict[str, str], new: dict[str, str]) -> list[str]:
     lines = []
-    for path in sorted(set(old) | set(new)):
+    for path in sorted(set(old) | set(new), key=_order):
         before, after = old.get(path), new.get(path)
         if before != after:
             lines.append(f"  {path}: {before if before is not None else '(absent)'} -> "
@@ -153,7 +178,7 @@ def on_sync(payload) -> None:
             previous = _last.get(_key(device))
             if previous is None:
                 _emit(f"capture sync {label} initial state",
-                      [f"  {p} = {v}" for p, v in sorted(view.items())])
+                      [f"  {p} = {view[p]}" for p in sorted(view, key=_order)])
             else:
                 _emit(f"capture sync {label} changes", _diff(previous, view))
             _last[_key(device)] = view
@@ -187,6 +212,6 @@ def on_answer(frame: dict) -> None:
                         out[f"arguments[{i}].{k}"] = "<payload>" if v else json.dumps(v)
                     else:
                         _flatten(v, f"arguments[{i}].{k}", out, k)
-        _emit("capture answer", [f"  {p} = {v}" for p, v in sorted(out.items())])
+        _emit("capture answer", [f"  {p} = {out[p]}" for p in sorted(out, key=_order)])
     except Exception:  # noqa: BLE001
         _LOGGER.debug("capture: could not read server answer", exc_info=True)

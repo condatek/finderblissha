@@ -136,3 +136,9 @@ async def test_bliss1_integer_set_points_stay_integers(make_api):
     api, cloud = make_api(bliss1_device())
     await api.async_set_automatic_schedule(SERIAL, VACANT_17)
     assert cloud.settings()["automaticSchedule"]["days"] == VACANT_17
+
+
+def test_shape_like_device_does_not_double_wrap():
+    from custom_components.finderblissha.pyfinderbliss.schedule import shape_like_device
+
+    assert shape_like_device(APP_DAYS_BLISS2, APP_DAYS_BLISS2, "BLISS2") == APP_DAYS_BLISS2
