@@ -1,16 +1,20 @@
 {
   "domain": "finderblissha",
   "name": "Finder Bliss Thermostats",
-  "version": "0.5.1",
-  "documentation": "https://github.com/condatek/finderblissha",
-  "issue_tracker": "https://github.com/condatek/finderblissha/issues",
-  "requirements": [],
+  "after_dependencies": [
+    "network"
+  ],
   "codeowners": [
     "@condatek"
   ],
   "config_flow": true,
-  "iot_class": "cloud_polling",
+  "documentation": "https://github.com/condatek/finderblissha",
   "integration_type": "hub",
-  "after_dependencies": ["network"],
-  "loggers": ["finderblissha"] 
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/condatek/finderblissha/issues",
+  "loggers": [
+    "finderblissha"
+  ],
+  "requirements": [],
+  "version": "0.5.7"
 }

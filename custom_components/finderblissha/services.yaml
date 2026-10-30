@@ -1,0 +1,14 @@
+set_schedule:
+  target:
+    entity:
+      integration: finderblissha
+      domain: climate
+  fields:
+    blocks:
+      example: '[{"from": "00:00", "to": "07:00", "temp": 17}, {"from": "07:00", "to": "24:00", "temp": 19.5}]'
+      selector:
+        object:
+    days:
+      example: '{"mon": [{"from": "00:00", "to": "24:00", "temp": 17}], "tue": [...], "wed": [...], "thu": [...], "fri": [...], "sat": [...], "sun": [...]}'
+      selector:
+        object:
