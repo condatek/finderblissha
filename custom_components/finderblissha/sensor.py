@@ -161,12 +161,16 @@ class FinderBlissBatterySensor(FinderBlissBaseSensor):
 
 
 class FinderBlissBatteryVoltageSensor(FinderBlissBaseSensor):
-    """The raw battery reading, for checking the percentage against the app."""
+    """The raw battery reading, for checking the percentage against the app.
+
+    No state_class yet: the Bliss 2 reading is assumed to be tenths of a volt
+    like the BLISS1's, and until that is confirmed long-term statistics should
+    not build up under V.
+    """
 
     _attr_name = "Battery voltage"
     _attr_device_class = SensorDeviceClass.VOLTAGE
     _attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
-    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_suggested_display_precision = 1
 

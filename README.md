@@ -69,7 +69,7 @@ Quote the times. Unquoted YAML reads `22:00` as the number 1320, which the servi
   
 The **Schedule** sensor shows the active preset name as its state and exposes per-day time blocks as attributes (e.g. `Monday: ["06:00-20:00: 19.0°C", "20:00-24:00: 18.0°C"]`).  
   
-Battery percentage depends on the model. On BLISS1 (4xAA, 2S2P) it is linear from 2.1 V to 3.0 V, calibrated against the app's dots. On Bliss 2 (3xAAA in series) it follows an alkaline discharge curve from 3.3 V (empty) to 4.5 V (full), so one dot in the app reads below 30%. A Bliss 2 reading outside 2.4–5.4 V shows the percentage as unknown. **Battery voltage** shows the raw reading.  
+Battery percentage depends on the model. On BLISS1 (4xAA, 2S2P) it is linear from 2.1 V to 3.0 V, calibrated against the app's dots. On Bliss 2 (3xAAA in series) it follows an alkaline discharge curve from 3.3 V (empty) to 4.5 V (full), so one dot in the app should read below 30% (a starting calibration, to be refined against **Battery voltage**). A Bliss 2 reading outside 2.4–5.4 V shows the percentage as unknown. **Battery voltage** shows the raw reading.  
   
 ### Sync profile (select entity)  
   

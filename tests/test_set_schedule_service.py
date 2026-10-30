@@ -145,6 +145,7 @@ async def test_bliss2_battery_and_voltage_sensors(hass, cloud):
     voltage = hass.states.get("sensor.living_room_battery_voltage")
     assert float(voltage.state) == pytest.approx(3.8)
     assert voltage.attributes["unit_of_measurement"] == "V"
+    assert "state_class" not in voltage.attributes
 
 
 async def test_bliss2_implausible_battery_reading_is_unknown(hass, cloud):
