@@ -41,6 +41,7 @@
       "temperature": { "name": "Temperature" },
       "humidity": { "name": "Humidity" },
       "battery": { "name": "Battery" },
+      "battery_voltage": { "name": "Battery voltage" },
       "wifi_level": { "name": "WiFi level" },
       "mode": { "name": "Mode" },
       "manual_set_point": { "name": "Manual set point" },

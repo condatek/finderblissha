@@ -51,7 +51,7 @@ _SENSITIVE_KEY = re.compile(
 _SENSITIVE_VALUE = re.compile(r"@|^[0-9a-fA-F-]{16,}$|^[A-Za-z0-9+/=_-]{32,}$")
 # Device-level fields worth seeing; everything else at that level is dropped.
 _DEVICE_FIELDS = ("tag", "status", "syncVersion", "isDeleted", "channel", "role", "tz", "lastUpdate")
-_MEASURE_FIELDS = ("mode", "status", "setPoint", "loggerSetPoint")
+_MEASURE_FIELDS = ("mode", "status", "setPoint", "loggerSetPoint", "batteryLevel")
 _ACK_DROP = ("serverPayload", "clientPayload")
 MAX_LINES = 400
 MAX_VALUE = 120

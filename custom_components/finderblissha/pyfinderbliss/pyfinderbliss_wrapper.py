@@ -64,6 +64,7 @@ class BlissDevice:
         self.mode_setting = device_data.get("mode_setting")
         self.wifi_level = device_data.get("wifi_level")
         self.battery_level = device_data.get("battery_level")
+        self.battery_voltage = device_data.get("battery_voltage")
         self.status = device_data.get("status")
         self.serial_number = device_data.get("serial_number")
         self.model = device_data.get("model")

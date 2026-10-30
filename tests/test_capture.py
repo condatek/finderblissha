@@ -69,6 +69,7 @@ def test_identifiers_and_account_data_are_redacted(caplog, fresh_capture):
     assert "settings.wifi.ssid = <redacted>" in text
     # Measures are reduced to the command-relevant fields.
     assert "measures.temperature" not in text and "measures.mode = 1" in text
+    assert "measures.batteryLevel.value = 38" in text
 
 
 def test_send_and_answer(caplog, fresh_capture):
