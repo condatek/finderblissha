@@ -28,7 +28,28 @@ A Home Assistant custom integration for **Finder BLISS** thermostats using the u
 - **HVAC action** — shows Heating, Cooling, or Idle based on the relay status  
 - **Schedule presets** — select named schedule programs configured in the Finder Bliss app (e.g. "Estate", "Freddo PT")  
   
-### Sensors  
+### Set schedule (service)  
+
+`finderblissha.set_schedule` writes the thermostat's active weekly schedule and switches it to schedule mode (AUTO). Use it when there is no named preset to select, for example on a BLISS2, where the app cannot create presets.  
+
+- `blocks`: one list of time blocks used on all seven days, or  
+- `days`: one list per day, keyed `mon`..`sun` (or `1`..`7`); all seven are required.  
+
+Each block has `from`, `to` (`HH:MM`) and `temp` (°C). A day starts at `00:00`, each block starts where the previous one ends, and the last ends at `24:00`. Temperatures are rounded to 0.5 °C and kept between 5 and 20 °C. Nothing is sent when the thermostat already runs that schedule in AUTO. The call fails if the Finder cloud does not confirm the change.  
+
+```yaml
+action: finderblissha.set_schedule
+target:
+  entity_id: climate.living_room_thermostat
+data:
+  blocks:
+    - { from: "00:00", to: "06:30", temp: 17 }
+    - { from: "06:30", to: "22:00", temp: 19.5 }
+    - { from: "22:00", to: "24:00", temp: 17 }
+```
+
+Quote the times: unquoted YAML reads `22:00` as a number. Unquoted times still work, but quoted ones are clearer.  
+
   
 | Sensor | Device class | Unit | Category |  
 |---|---|---|---|  
@@ -113,6 +134,11 @@ To update credentials later, go to the integration entry, click the three-dot me
 
 ## Changelog
 
+### v0.5.7
+
+*   **New service `finderblissha.set_schedule`:** writes the active schedule from time blocks (one list for every day, or one per day), then switches to AUTO. It is idempotent and confirmed against the server.
+*   Adds `services.yaml`, English translations and unit tests.
+
 ### v0.5.0
 
 This version brings substantial improvements and new features, largely thanks to contributions from @marl1w.
@@ -150,4 +176,4 @@ Your contributions are essential to the continuous improvement of this project!
 
 ## Contributing  
   
-Contributions to this project are welcome! If you'd like to help develop features or improve functionality, please fork the repository and create a pull request.  
+Contributions to this project are welcome! If you'd like to help develop features or improve functionality, please fork the repository and create a pull request.  

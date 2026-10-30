@@ -262,6 +262,24 @@ class BlissDevice:
         self.settings = modified
         self.automatic_schedule = {"days": target_preset["days"]}
 
+    async def set_automatic_schedule(self, days: list):
+        """Write caller-built days as the active automaticSchedule.
+
+        Other keys already on automaticSchedule are kept; only days changes.
+        """
+        self._ensure_client()
+
+        settings_dict = self._load_settings()
+        current = settings_dict.get("automaticSchedule")
+        schedule = dict(current) if isinstance(current, dict) else {}
+        schedule["days"] = days
+        settings_dict["automaticSchedule"] = schedule
+
+        modified = self._serialize_settings(settings_dict)
+        await self._client.send_operation(device_data=self._build_send_payload(modified))
+        self.settings = modified
+        self.automatic_schedule = schedule
+
 
 class PyFinderBlissAPI:
     def __init__(self, username: str, password: str, max_retries=3, retry_delay=5):
@@ -396,7 +414,7 @@ class PyFinderBlissAPI:
             return await self.async_get_devices()
         return self._devices
 
-    async def _async_run_command(self, device_serial: str, apply_fn, verify_fn, description: str):
+    async def _async_run_command(self, device_serial: str, apply_fn, verify_fn, description: str, skip_fn=None):
         """Apply a command and confirm the server took it, retrying if it did not.
 
         An ACK only proves the frame was accepted; whether the settings landed
@@ -404,6 +422,9 @@ class PyFinderBlissAPI:
         poll just reports the old value, which downstream reads as somebody
         having changed it by hand. Returns the snapshot that confirmed it, so
         the caller can publish state it has actually verified.
+
+        When skip_fn says the fresh snapshot already holds the result, nothing
+        is sent and that snapshot is returned.
         """
         async with self._command_lock:
             last_error: Exception | None = None
@@ -414,6 +435,9 @@ class PyFinderBlissAPI:
                 device = self._find_device_by_serial(device_serial, devices)
                 if device is None:
                     raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
+                if skip_fn is not None and skip_fn(device):
+                    _LOGGER.debug("%s already applied, not sent", description)
+                    return devices
 
                 try:
                     await apply_fn(device)
@@ -497,6 +521,41 @@ class PyFinderBlissAPI:
             lambda device: device.set_schedule_preset(preset_name=preset_name),
             _applied,
             f"Schedule preset {preset_name!r}",
+        )
+
+    async def async_set_automatic_schedule(self, device_serial: str, days: list):
+        """Write the active schedule, unless the device already runs exactly it."""
+        target = normalize_schedule_days(days)
+
+        def _matches(device: 'BlissDevice') -> bool:
+            active = (device.automatic_schedule or {}).get("days", [])
+            return normalize_schedule_days(active) == target
+
+        return await self._async_run_command(
+            device_serial,
+            lambda device: device.set_automatic_schedule(days=days),
+            _matches,
+            "Automatic schedule",
+            skip_fn=_matches,
+        )
+
+    async def async_resume_schedule(self, device_serial: str):
+        """Set AUTO, unless the device is already commanded to it.
+
+        A pending BLISS2 manualTimer overrides primary.mode, so its presence
+        means AUTO still has to be sent (set_mode removes it).
+        """
+        def _already_auto(device: 'BlissDevice') -> bool:
+            if commanded_mode(device) != "auto":
+                return False
+            return device.tag == "BLISS1" or "manualTimer" not in device._load_settings()
+
+        return await self._async_run_command(
+            device_serial,
+            lambda device: device.set_mode(mode="AUTO"),
+            lambda device: commanded_mode(device) == "auto",
+            "Mode AUTO",
+            skip_fn=_already_auto,
         )
 
     async def async_close(self):
