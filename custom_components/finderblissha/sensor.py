@@ -14,6 +14,7 @@ from homeassistant.const import (
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
+    UnitOfElectricPotential,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
@@ -61,8 +62,11 @@ def build_entities_from_devices(coordinator: DataUpdateCoordinator):
             entities.append(FinderBlissTemperatureSensor(coordinator, device))
         if device.humidity not in (None, "N/A"):
             entities.append(FinderBlissHumiditySensor(coordinator, device))
-        if device.battery_level not in (None, "N/A"):
+        # Created from the raw reading, so a BLISS2 whose voltage is out of
+        # the plausible range still gets both (the percentage as unknown).
+        if getattr(device, "battery_voltage", None) is not None:
             entities.append(FinderBlissBatterySensor(coordinator, device))
+            entities.append(FinderBlissBatteryVoltageSensor(coordinator, device))
         if getattr(device, "wifi_level", None) not in (None, "N/A"):
             entities.append(FinderBlissWifiSensor(coordinator, device))
         if getattr(device, "mode", None) is not None:
@@ -154,6 +158,20 @@ class FinderBlissBatterySensor(FinderBlissBaseSensor):
 
     def __init__(self, coordinator, device):
         super().__init__(coordinator, device, "battery", "battery_level")
+
+
+class FinderBlissBatteryVoltageSensor(FinderBlissBaseSensor):
+    """The raw battery reading, for checking the percentage against the app."""
+
+    _attr_name = "Battery voltage"
+    _attr_device_class = SensorDeviceClass.VOLTAGE
+    _attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, device):
+        super().__init__(coordinator, device, "battery_voltage", "battery_voltage")
 
 
 class FinderBlissWifiSensor(FinderBlissBaseSensor):

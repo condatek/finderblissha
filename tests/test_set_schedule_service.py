@@ -138,3 +138,21 @@ async def test_schedule_written_but_auto_dropped_fails_and_a_retry_completes(has
 
 def json_mode(payload):
     return json.loads(payload["settings"])["primary"]["mode"]
+
+
+async def test_bliss2_battery_and_voltage_sensors(hass, cloud):
+    assert hass.states.get("sensor.living_room_battery").state == "25"
+    voltage = hass.states.get("sensor.living_room_battery_voltage")
+    assert float(voltage.state) == pytest.approx(3.8)
+    assert voltage.attributes["unit_of_measurement"] == "V"
+
+
+async def test_bliss2_implausible_battery_reading_is_unknown(hass, cloud):
+    measures = json.loads(cloud.device["measures"])
+    measures["batteryLevel"] = {"value": 100}
+    cloud.device["measures"] = json.dumps(measures)
+    entry_data = next(iter(hass.data[DOMAIN].values()))
+    await entry_data["coordinator"].async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.living_room_battery").state == "unknown"
+    assert float(hass.states.get("sensor.living_room_battery_voltage").state) == pytest.approx(10.0)

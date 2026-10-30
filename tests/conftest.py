@@ -57,7 +57,7 @@ def bliss2_device(mode="AUTO", days=None, extra_settings=None):
         "humidity": {"value": 55},
         "setPoint": {"value": 200, "unit": "C"},
         "wifiLevel": 3,
-        "batteryLevel": {"value": 29},
+        "batteryLevel": {"value": 38},
     }
     return {
         "handle": "dev-handle-1",
