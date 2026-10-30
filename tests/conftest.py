@@ -23,6 +23,23 @@ APP_DAYS = [
 ]
 
 
+def as_bliss2(days):
+    """The same days with set points in the BLISS2 shape, {"unit": "C", "value": n}.
+
+    That is how BLISS2 devices report their schedule (upstream issues #7, #14).
+    """
+    return [
+        {"day": d["day"], "setPoints": [
+            {"hour": sp["hour"], "minute": sp["minute"], "setPoint": {"unit": "C", "value": sp["setPoint"]}}
+            for sp in d["setPoints"]
+        ]}
+        for d in days
+    ]
+
+
+APP_DAYS_BLISS2 = as_bliss2(APP_DAYS)
+
+
 def bliss2_device(mode="AUTO", days=None, extra_settings=None):
     """One device entry in the sync payload shape (settings/measures are JSON strings)."""
     settings = {
@@ -30,7 +47,7 @@ def bliss2_device(mode="AUTO", days=None, extra_settings=None):
         "updateStep": "60",
         "thermalDifferential": 3,
         "primary": {"mode": mode, "manualSetPoint": None},
-        "automaticSchedule": {"days": copy.deepcopy(APP_DAYS if days is None else days)},
+        "automaticSchedule": {"days": copy.deepcopy(APP_DAYS_BLISS2 if days is None else days)},
     }
     settings.update(extra_settings or {})
     measures = {

@@ -131,6 +131,37 @@ def build_day(day: int, blocks: list) -> dict:
     return {"day": day, "setPoints": set_points}
 
 
+def _set_point_template(current_days, tag):
+    """The keys besides "value" that this device puts on a set point.
+
+    None means bare integers. Taken from the schedule the device reports, so
+    a write matches what the cloud already holds; a BLISS2 with no schedule
+    to copy gets {"unit": "C"}, the shape BLISS2 devices report.
+    """
+    for day_entry in current_days or []:
+        for sp in day_entry.get("setPoints", []) if isinstance(day_entry, dict) else []:
+            raw = sp.get("setPoint") if isinstance(sp, dict) else None
+            if isinstance(raw, dict):
+                return {k: v for k, v in raw.items() if k != "value"}
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                return None
+    return {"unit": "C"} if tag == "BLISS2" else None
+
+
+def shape_like_device(days: list, current_days: list | None, tag: str | None = None) -> list:
+    """Rewrite built days (integer tenths) in the set point shape the device uses."""
+    template = _set_point_template(current_days, tag)
+    if template is None:
+        return days
+    return [
+        {"day": day["day"], "setPoints": [
+            {"hour": sp["hour"], "minute": sp["minute"], "setPoint": {**template, "value": sp["setPoint"]}}
+            for sp in day["setPoints"]
+        ]}
+        for day in days
+    ]
+
+
 def build_schedule_days(blocks: list | None = None, days: dict | None = None) -> list:
     """Build all seven days, from one block list or from one list per day.
 

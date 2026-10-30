@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements_test.txt
-      - run: python -m pytest -q -p no:logging
+      - run: python -m pytest -q
 
   hacs:
     runs-on: ubuntu-latest

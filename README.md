@@ -130,10 +130,17 @@ To update credentials later, go to the integration entry, click the three-dot me
 - **Off mode** on BLISS1 devices activates frost protection (anti-freeze), not a full power-off.  
 - Thermal differential (hysteresis) is exposed as a read-only diagnostic sensor. It can be configured from the Finder Bliss app.  
 - The API is unofficial and may break if Finder changes their cloud service.  
+- **State capture (off by default):** to see exactly what changes when you edit something in the Finder app, set the logger `custom_components.finderblissha.capture` to `debug` (Developer tools → Actions → `logger.set_level`). The first sync logs each device's settings as `path = value`, and later syncs and every write log only what changed. Device identifiers, names and account data are redacted. Set it back to `warning` when done. Debug logging for the integration as a whole does not turn it on.  
 
 ---
 
 ## Changelog
+
+### v0.5.8
+
+*   **Fix `set_schedule` on Bliss 2:** set points are now written in the shape the device reports (`{"unit": "C", "value": 190}` on a Bliss 2, not a bare `190`). A schedule identical to the current one is recognised as such, so nothing is sent.
+*   The target temperature in schedule mode now reads dict-shaped schedule set points too.
+*   **Opt-in state capture** for diagnosing writes: see Notes.
 
 ### v0.5.7
 
