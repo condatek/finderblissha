@@ -5,6 +5,7 @@ import time
 from typing import Union
 from .client import BlissClientAsync, BlissCommandError
 from .device_parser import normalize_schedule_days
+from .schedule import shape_like_device
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -266,13 +267,15 @@ class BlissDevice:
         """Write caller-built days as the active automaticSchedule.
 
         Other keys already on automaticSchedule are kept; only days changes.
+        Set points go out in the shape the device already uses (on a BLISS2,
+        {"unit": "C", "value": n}), not as bare integers.
         """
         self._ensure_client()
 
         settings_dict = self._load_settings()
         current = settings_dict.get("automaticSchedule")
         schedule = dict(current) if isinstance(current, dict) else {}
-        schedule["days"] = days
+        schedule["days"] = shape_like_device(days, schedule.get("days"), self.tag)
         settings_dict["automaticSchedule"] = schedule
 
         modified = self._serialize_settings(settings_dict)

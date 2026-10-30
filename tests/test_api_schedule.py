@@ -5,13 +5,13 @@ import pytest
 from custom_components.finderblissha.pyfinderbliss.client import BlissCommandError
 from custom_components.finderblissha.pyfinderbliss.schedule import build_schedule_days
 
-from .conftest import APP_DAYS, SERIAL, bliss1_device, bliss2_device
+from .conftest import APP_DAYS, APP_DAYS_BLISS2, SERIAL, as_bliss2, bliss1_device, bliss2_device
 
 VACANT_17 = build_schedule_days(blocks=[{"from": "00:00", "to": "24:00", "temp": 17}])
 
 
 async def test_writes_days_in_the_device_shape_and_keeps_other_settings(make_api):
-    api, cloud = make_api(bliss2_device(extra_settings={"automaticSchedule": {"days": APP_DAYS, "keep": 1}}))
+    api, cloud = make_api(bliss2_device(extra_settings={"automaticSchedule": {"days": APP_DAYS_BLISS2, "keep": 1}}))
     devices = await api.async_set_automatic_schedule(SERIAL, VACANT_17)
 
     assert len(cloud.sent) == 1
@@ -19,13 +19,14 @@ async def test_writes_days_in_the_device_shape_and_keeps_other_settings(make_api
     assert payload["serialNumber"] == SERIAL and payload["status"] == "PENDING"
     assert payload["syncVersion"] == 7
     sent = json.loads(payload["settings"])
-    assert sent["automaticSchedule"] == {"days": VACANT_17, "keep": 1}
+    # BLISS2 set points go out as {"unit": "C", "value": n}, like the device reports them.
+    assert sent["automaticSchedule"] == {"days": as_bliss2(VACANT_17), "keep": 1}
     # Everything else in settings goes back unchanged.
     before = json.loads(bliss2_device()["settings"])
     assert {k: v for k, v in sent.items() if k != "automaticSchedule"} == {
         k: v for k, v in before.items() if k != "automaticSchedule"
     }
-    assert devices[0].automatic_schedule["days"] == VACANT_17
+    assert devices[0].automatic_schedule["days"] == as_bliss2(VACANT_17)
 
 
 async def test_same_schedule_sends_nothing(make_api):
@@ -40,7 +41,7 @@ async def test_same_schedule_sends_nothing(make_api):
 
 
 async def test_same_schedule_in_another_order_sends_nothing(make_api):
-    shuffled = [{"day": d["day"], "setPoints": list(reversed(d["setPoints"]))} for d in reversed(APP_DAYS)]
+    shuffled = [{"day": d["day"], "setPoints": list(reversed(d["setPoints"]))} for d in reversed(APP_DAYS_BLISS2)]
     api, cloud = make_api(bliss2_device(days=shuffled))
     await api.async_set_automatic_schedule(SERIAL, APP_DAYS)
     assert cloud.sent == []
@@ -106,3 +107,38 @@ async def test_bliss1_schedule_write_keeps_other_settings(make_api):
     assert {k: v for k, v in sent.items() if k != "automaticSchedule"} == {
         k: v for k, v in before.items() if k != "automaticSchedule"
     }
+
+
+async def test_bliss2_dict_set_points_equal_to_the_built_schedule_send_nothing(make_api):
+    # The on-device failure of v0.5.7: the device reports {"unit": "C", "value": 190},
+    # the builder makes 190, and the two must compare equal.
+    api, cloud = make_api(bliss2_device(days=APP_DAYS_BLISS2))
+    await api.async_set_automatic_schedule(SERIAL, APP_DAYS)
+    assert cloud.sent == []
+
+
+async def test_bliss2_set_point_template_keeps_extra_keys(make_api):
+    days = [{"day": d["day"], "setPoints": [
+        {**sp, "setPoint": {**sp["setPoint"], "preset": 1}} for sp in d["setPoints"]]} for d in APP_DAYS_BLISS2]
+    api, cloud = make_api(bliss2_device(days=days))
+    await api.async_set_automatic_schedule(SERIAL, VACANT_17)
+    sp = cloud.settings()["automaticSchedule"]["days"][0]["setPoints"][0]["setPoint"]
+    assert sp == {"unit": "C", "preset": 1, "value": 170}
+
+
+async def test_bliss2_with_no_schedule_gets_the_bliss2_shape(make_api):
+    api, cloud = make_api(bliss2_device(days=[]))
+    await api.async_set_automatic_schedule(SERIAL, VACANT_17)
+    assert cloud.settings()["automaticSchedule"]["days"] == as_bliss2(VACANT_17)
+
+
+async def test_bliss1_integer_set_points_stay_integers(make_api):
+    api, cloud = make_api(bliss1_device())
+    await api.async_set_automatic_schedule(SERIAL, VACANT_17)
+    assert cloud.settings()["automaticSchedule"]["days"] == VACANT_17
+
+
+def test_shape_like_device_does_not_double_wrap():
+    from custom_components.finderblissha.pyfinderbliss.schedule import shape_like_device
+
+    assert shape_like_device(APP_DAYS_BLISS2, APP_DAYS_BLISS2, "BLISS2") == APP_DAYS_BLISS2

@@ -54,8 +54,23 @@ def determine_bliss2_mode(measures: dict) -> str:
     }.get(mode, "unknown")
 
 
+def schedule_set_point_value(raw):
+    """A schedule set point in tenths of C, from either shape the API uses.
+
+    BLISS2 schedules carry {"unit": "C", "value": 210}; older payloads a bare
+    210. Anything else comes back unchanged so it still compares unequal.
+    """
+    if isinstance(raw, dict):
+        return raw.get("value")
+    return raw
+
+
 def normalize_schedule_days(days: list) -> list:
-    """Normalize schedule days for reliable comparison."""
+    """Normalize schedule days for reliable comparison.
+
+    Set points compare by value, so a dict-shaped and an integer set point
+    for the same temperature are the same schedule.
+    """
     normalized = []
     for day_entry in sorted(days or [], key=lambda d: d.get("day", 0)):
         set_points = sorted(
@@ -65,7 +80,8 @@ def normalize_schedule_days(days: list) -> list:
         normalized.append({
             "day": day_entry.get("day"),
             "setPoints": [
-                {"hour": sp.get("hour"), "minute": sp.get("minute"), "setPoint": sp.get("setPoint")}
+                {"hour": sp.get("hour"), "minute": sp.get("minute"),
+                 "setPoint": schedule_set_point_value(sp.get("setPoint"))}
                 for sp in set_points
             ]
         })

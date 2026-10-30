@@ -29,7 +29,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
-from .pyfinderbliss.device_parser import normalize_schedule_days
+from .pyfinderbliss.device_parser import normalize_schedule_days, schedule_set_point_value
 from .pyfinderbliss.pyfinderbliss_wrapper import BlissDevice, PyFinderBlissAPI
 from .pyfinderbliss.schedule import ScheduleError, build_schedule_days
 
@@ -95,7 +95,7 @@ def _scheduled_set_point(days: list, tz_name: str | None) -> float | None:
                 if sp.get("hour", 0) * 60 + sp.get("minute", 0) <= minutes_now
             ]
         if set_points:
-            value = set_points[-1].get("setPoint")
+            value = schedule_set_point_value(set_points[-1].get("setPoint"))
             if isinstance(value, (int, float)):
                 return value / 10
         day = day - 1 or 7

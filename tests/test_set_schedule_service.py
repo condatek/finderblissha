@@ -10,7 +10,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.finderblissha.const import DOMAIN
 from custom_components.finderblissha.pyfinderbliss.schedule import build_schedule_days
 
-from .conftest import APP_DAYS, FakeCloud, bliss2_device
+from .conftest import APP_DAYS_BLISS2, FakeCloud, as_bliss2, bliss2_device
 
 ENTITY = "climate.living_room_thermostat"
 
@@ -48,12 +48,12 @@ async def test_all_day_17_writes_schedule_then_auto(hass, cloud):
 
     assert len(cloud.sent) == 2
     first, second = (json.loads(p["settings"]) for p in cloud.sent)
-    assert first["automaticSchedule"]["days"] == build_schedule_days(
-        blocks=[{"from": "00:00", "to": "24:00", "temp": 17}])
+    assert first["automaticSchedule"]["days"] == as_bliss2(build_schedule_days(
+        blocks=[{"from": "00:00", "to": "24:00", "temp": 17}]))
     assert first["primary"]["mode"] == "OFF"
     assert second["primary"]["mode"] == "AUTO"
     assert cloud.settings()["automaticSchedule"]["days"][0]["setPoints"] == [
-        {"hour": 0, "minute": 0, "setPoint": 170}]
+        {"hour": 0, "minute": 0, "setPoint": {"unit": "C", "value": 170}}]
     # operating_mode follows the thermostat's own echo (measures), which only
     # moves when it next checks in; the commanded side is what was verified.
 
@@ -66,6 +66,32 @@ async def test_repeating_the_call_sends_nothing(hass, cloud):
     assert len(cloud.sent) == sent
 
 
+async def test_identical_schedule_on_a_bliss2_sends_nothing_from_auto(hass, cloud):
+    # Device reports dict set points; the same blocks must be a no-op once in AUTO.
+    occupied = [
+        {"from": "00:00", "to": "05:00", "temp": 19},
+        {"from": "05:00", "to": "22:00", "temp": 20},
+        {"from": "22:00", "to": "24:00", "temp": 19},
+    ]
+    await call(hass, blocks=occupied)
+    assert len(cloud.sent) == 1  # only AUTO: the device was OFF, the schedule already matched
+    sent = len(cloud.sent)
+    await call(hass, blocks=occupied)
+    assert len(cloud.sent) == sent
+
+
+async def test_target_temperature_follows_a_dict_shaped_schedule(hass, cloud):
+    await call(hass, blocks=[{"from": "00:00", "to": "24:00", "temp": 17}])
+    # The thermostat checks in: its own echo now reports AUTO.
+    measures = json.loads(cloud.device["measures"])
+    measures["mode"] = 1
+    cloud.device["measures"] = json.dumps(measures)
+    entry_data = next(iter(hass.data[DOMAIN].values()))
+    await entry_data["coordinator"].async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(ENTITY).attributes["temperature"] == 17.0
+
+
 async def test_occupied_per_day(hass, cloud):
     occupied = [
         {"from": "00:00", "to": "05:00", "temp": 19},
@@ -73,7 +99,7 @@ async def test_occupied_per_day(hass, cloud):
         {"from": "22:00", "to": "24:00", "temp": 19},
     ]
     await call(hass, days={d: occupied for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")})
-    assert cloud.settings()["automaticSchedule"]["days"] == APP_DAYS
+    assert cloud.settings()["automaticSchedule"]["days"] == APP_DAYS_BLISS2
     assert cloud.settings()["primary"]["mode"] == "AUTO"
 
 
@@ -99,7 +125,7 @@ async def test_schedule_written_but_auto_dropped_fails_and_a_retry_completes(has
     with pytest.raises(HomeAssistantError, match="did not apply"):
         await call(hass, blocks=blocks)
     # The schedule landed; the thermostat keeps its previous mode.
-    assert cloud.settings()["automaticSchedule"]["days"][0]["setPoints"][0]["setPoint"] == 170
+    assert cloud.settings()["automaticSchedule"]["days"][0]["setPoints"][0]["setPoint"]["value"] == 170
     assert cloud.settings()["primary"]["mode"] == "OFF"
 
     cloud.drop_if = None
