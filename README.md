@@ -50,6 +50,7 @@ data:
 
 Quote the times. Unquoted YAML reads `22:00` as the number 1320, which the service takes as minutes since midnight, so it still works; but a bare number always means minutes, so `to: 7` is 00:07, not 07:00. At most 12 blocks per day.  
 
+### Sensors  
   
 | Sensor | Device class | Unit | Category |  
 |---|---|---|---|  
