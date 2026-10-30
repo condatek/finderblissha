@@ -26,6 +26,8 @@ jobs:
       - uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
         with:
           category: integration
+          # Default-store listing checks; a custom-repository install needs none of them.
+          ignore: brands issues topics
 
   hassfest:
     runs-on: ubuntu-latest
