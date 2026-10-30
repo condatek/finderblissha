@@ -48,7 +48,7 @@ data:
     - { from: "22:00", to: "24:00", temp: 17 }
 ```
 
-Quote the times: unquoted YAML reads `22:00` as a number. Unquoted times still work, but quoted ones are clearer.  
+Quote the times. Unquoted YAML reads `22:00` as the number 1320, which the service takes as minutes since midnight, so it still works; but a bare number always means minutes, so `to: 7` is 00:07, not 07:00. At most 12 blocks per day.  
 
   
 | Sensor | Device class | Unit | Category |  
@@ -176,4 +176,4 @@ Your contributions are essential to the continuous improvement of this project!
 
 ## Contributing  
   
-Contributions to this project are welcome! If you'd like to help develop features or improve functionality, please fork the repository and create a pull request.  
+Contributions to this project are welcome! If you'd like to help develop features or improve functionality, please fork the repository and create a pull request.  

@@ -553,7 +553,9 @@ class PyFinderBlissAPI:
         return await self._async_run_command(
             device_serial,
             lambda device: device.set_mode(mode="AUTO"),
-            lambda device: commanded_mode(device) == "auto",
+            # Confirm with the skip test: a pending timer leaves primary.mode
+            # reading AUTO, so mode alone would pass a dropped write.
+            _already_auto,
             "Mode AUTO",
             skip_fn=_already_auto,
         )

@@ -93,5 +93,22 @@ async def test_a_dropped_write_fails_the_call(hass, cloud):
     assert all(json_mode(p) == "OFF" for p in cloud.sent)
 
 
+async def test_schedule_written_but_auto_dropped_fails_and_a_retry_completes(hass, cloud):
+    blocks = [{"from": "00:00", "to": "24:00", "temp": 17}]
+    cloud.drop_if = lambda settings: settings["primary"]["mode"] == "AUTO"
+    with pytest.raises(HomeAssistantError, match="did not apply"):
+        await call(hass, blocks=blocks)
+    # The schedule landed; the thermostat keeps its previous mode.
+    assert cloud.settings()["automaticSchedule"]["days"][0]["setPoints"][0]["setPoint"] == 170
+    assert cloud.settings()["primary"]["mode"] == "OFF"
+
+    cloud.drop_if = None
+    sent = len(cloud.sent)
+    await call(hass, blocks=blocks)
+    # Retry skips the schedule (already there) and sends only AUTO.
+    assert len(cloud.sent) == sent + 1
+    assert cloud.settings()["primary"]["mode"] == "AUTO"
+
+
 def json_mode(payload):
     return json.loads(payload["settings"])["primary"]["mode"]

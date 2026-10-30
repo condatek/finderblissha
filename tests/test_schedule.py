@@ -90,10 +90,23 @@ def test_rejects_blocks_that_do_not_cover_the_day(blocks, message):
 
 
 def test_needs_exactly_one_of_blocks_or_days():
-    with pytest.raises(ScheduleError, match="either"):
+    with pytest.raises(ScheduleError, match="^Give either blocks or days$"):
         build_schedule_days()
-    with pytest.raises(ScheduleError, match="either"):
+    with pytest.raises(ScheduleError, match="not both"):
         build_schedule_days(blocks=OCCUPIED, days={"mon": OCCUPIED})
+
+
+def test_caps_blocks_per_day():
+    hourly = [{"from": f"{h:02d}:00", "to": f"{h + 1:02d}:00", "temp": 18} for h in range(24)]
+    with pytest.raises(ScheduleError, match="at most 12"):
+        build_schedule_days(blocks=hourly)
+    two_hourly = [{"from": f"{h:02d}:00", "to": f"{h + 2:02d}:00", "temp": 18} for h in range(0, 24, 2)]
+    assert len(build_schedule_days(blocks=two_hourly)[0]["setPoints"]) == 12
+
+
+def test_a_bare_integer_is_minutes():
+    days = build_schedule_days(blocks=[{"from": 0, "to": 7, "temp": 17}, {"from": 7, "to": 1440, "temp": 19}])
+    assert days[0]["setPoints"][1] == {"hour": 0, "minute": 7, "setPoint": 190}
 
 
 def test_per_day_needs_all_seven_once():

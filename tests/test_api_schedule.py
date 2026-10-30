@@ -5,7 +5,7 @@ import pytest
 from custom_components.finderblissha.pyfinderbliss.client import BlissCommandError
 from custom_components.finderblissha.pyfinderbliss.schedule import build_schedule_days
 
-from .conftest import APP_DAYS, SERIAL, bliss2_device
+from .conftest import APP_DAYS, SERIAL, bliss1_device, bliss2_device
 
 VACANT_17 = build_schedule_days(blocks=[{"from": "00:00", "to": "24:00", "temp": 17}])
 
@@ -72,3 +72,37 @@ async def test_resume_schedule_clears_a_pending_manual_timer(make_api):
     await api.async_resume_schedule(SERIAL)
     assert len(cloud.sent) == 1
     assert "manualTimer" not in cloud.settings()
+
+
+async def test_resume_schedule_with_a_pending_timer_fails_if_the_write_is_dropped(make_api):
+    # primary.mode already reads AUTO, so only the timer shows the write was lost.
+    api, cloud = make_api(bliss2_device(mode="AUTO", extra_settings={"manualTimer": {"value": 190}}))
+    cloud.apply_writes = False
+    with pytest.raises(BlissCommandError, match="did not apply"):
+        await api.async_resume_schedule(SERIAL)
+    assert len(cloud.sent) == 2
+
+
+async def test_bliss1_override_in_progress_is_sent_auto(make_api):
+    api, cloud = make_api(bliss1_device(override=True))
+    await api.async_resume_schedule(SERIAL)
+    assert len(cloud.sent) == 1
+    assert cloud.settings()["mode"] == "AUTO"
+    assert cloud.settings()["manualSchedule"]["isOn"] is False
+
+
+async def test_bliss1_plain_auto_is_skipped(make_api):
+    api, cloud = make_api(bliss1_device(override=False))
+    await api.async_resume_schedule(SERIAL)
+    assert cloud.sent == []
+
+
+async def test_bliss1_schedule_write_keeps_other_settings(make_api):
+    api, cloud = make_api(bliss1_device())
+    await api.async_set_automatic_schedule(SERIAL, VACANT_17)
+    sent = json.loads(cloud.sent[0]["settings"])
+    before = json.loads(bliss1_device()["settings"])
+    assert sent["automaticSchedule"] == {"days": VACANT_17}
+    assert {k: v for k, v in sent.items() if k != "automaticSchedule"} == {
+        k: v for k, v in before.items() if k != "automaticSchedule"
+    }

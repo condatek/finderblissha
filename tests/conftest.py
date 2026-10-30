@@ -61,6 +61,34 @@ def bliss2_device(mode="AUTO", days=None, extra_settings=None):
     }
 
 
+def bliss1_device(override=False, days=None):
+    """A BLISS1 entry: AUTO + manualSchedule.isOn is a timed manual override."""
+    settings = {
+        "mode": "AUTO",
+        "season": "WINTER",
+        "updateStep": "60",
+        "manualSchedule": {"isOn": override, "setPoint": 190},
+        "automaticSchedule": {"days": copy.deepcopy(APP_DAYS if days is None else days)},
+    }
+    measures = {"temperature": {"value": 195}, "loggerSetPoint": {"value": 200}, "status": "OFF"}
+    return {
+        "handle": "dev-handle-2",
+        "serialNumber": SERIAL,
+        "name": "Living room",
+        "tag": "BLISS1",
+        "channel": 0,
+        "role": "OWNER",
+        "houseHandle": "house-1",
+        "gatewayHandle": None,
+        "isDeleted": False,
+        "tz": "Europe/Rome",
+        "syncVersion": 3,
+        "settings": json.dumps(settings, separators=(",", ":")),
+        "measures": json.dumps(measures, separators=(",", ":")),
+        "schedules": "[]",
+    }
+
+
 class FakeCloud:
     """Stands in for BlissClientAsync: serves devices, records and applies writes."""
 
@@ -68,6 +96,8 @@ class FakeCloud:
         self.device = device
         self.sent = []
         self.apply_writes = True
+        # Optional predicate on the sent settings: True drops that one write.
+        self.drop_if = None
         self.is_logged_in = True
 
     async def _login(self):
@@ -78,7 +108,7 @@ class FakeCloud:
 
     async def send_operation(self, device_data, operation_key="ALL"):
         self.sent.append(copy.deepcopy(device_data))
-        if self.apply_writes:
+        if self.apply_writes and not (self.drop_if and self.drop_if(json.loads(device_data["settings"]))):
             self.device["settings"] = device_data["settings"]
             self.device["syncVersion"] += 1
 

@@ -20,6 +20,9 @@ _LOGGER = logging.getLogger(__name__)
 MIN_TEMP = 5.0
 MAX_TEMP = 20.0
 TEMP_STEP = 0.5
+# A sanity bound, not a known device limit: the app's own schedules use a
+# handful of blocks per day.
+MAX_BLOCKS_PER_DAY = 12
 
 DAY_NUMBERS = {
     "mon": 1, "monday": 1,
@@ -41,7 +44,8 @@ class ScheduleError(ValueError):
 def parse_time(value) -> int:
     """Return minutes since midnight for "HH:MM" (or "HH:MM:SS" with :00).
 
-    An integer is taken as minutes since midnight. YAML 1.1 reads an unquoted
+    An integer is always minutes since midnight (7 means 00:07, not 07:00).
+    YAML 1.1 reads an unquoted
     22:00 as the base-60 number 1320, which is exactly that, while 05:00 stays
     a string because of its leading zero; accepting both keeps unquoted
     service calls working.
@@ -98,6 +102,8 @@ def build_day(day: int, blocks: list) -> dict:
     """Turn one day's contiguous blocks into its set points."""
     if not blocks:
         raise ScheduleError(f"Day {day} has no blocks")
+    if len(blocks) > MAX_BLOCKS_PER_DAY:
+        raise ScheduleError(f"Day {day} has {len(blocks)} blocks; at most {MAX_BLOCKS_PER_DAY} are allowed")
 
     set_points = []
     expected_start = 0
@@ -131,8 +137,10 @@ def build_schedule_days(blocks: list | None = None, days: dict | None = None) ->
     Exactly one of blocks (applied to every day) or days (a mapping with all
     seven weekdays) must be given.
     """
-    if (blocks is None) == (days is None):
-        raise ScheduleError("Give either blocks or days, not both")
+    if blocks is None and days is None:
+        raise ScheduleError("Give either blocks or days")
+    if blocks is not None and days is not None:
+        raise ScheduleError("Give blocks or days, not both")
 
     if blocks is not None:
         return [build_day(day, blocks) for day in range(1, 8)]
