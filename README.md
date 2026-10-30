@@ -54,9 +54,9 @@ An editable select entity to control the device's cloud sync interval:
   
 | Profile | Interval |  
 |---|---|  
-| Energy saving | 10 min |  
-| Normal | 5 min |  
-| Fast | 2 min |  
+| Energy saving | 30 min |  
+| Normal | 15 min |  
+| Fast | 5 min |  
 | Super fast | 1 min |  
   
 Categorized as a **Config** entity.  
