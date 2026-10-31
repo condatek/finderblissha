@@ -73,7 +73,7 @@ Battery percentage depends on the model. On BLISS1 (4xAA, 2S2P) it is linear fro
   
 ### Sync profile (select entity)  
   
-An editable select entity to control the device's cloud sync interval:  
+On **BLISS1 devices only**, an editable select entity controls how often the thermostat synchronizes with the Finder cloud:  
   
 | Profile | Interval |  
 |---|---|  
