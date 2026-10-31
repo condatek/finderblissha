@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="custom_components/finderblissha/brand/logo.png" alt="Finder Bliss thermostat" width="280">
+</p>
+
 ## Disclaimer
   
 This project is not affiliated, associated, authorized, endorsed by, or in any way officially connected with Finder S.p.A.  
