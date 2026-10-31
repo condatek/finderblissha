@@ -154,6 +154,17 @@ To update credentials later, go to the integration entry, click the three-dot me
 *   **New service `finderblissha.set_schedule`:** writes the active schedule from time blocks (one list for every day, or one per day), then switches to AUTO. It is idempotent and confirmed against the server.
 *   Adds `services.yaml`, English translations and unit tests.
 
+### v0.5.6
+
+*   **WebSocket resilience:** improved connection reliability on weak networks by automatically resetting and reconnecting polling, reducing unavailable states and the need for manual reloads. (by [**@marl1w**](https://github.com/marl1w))
+*   **Concurrent commands:** fixed execution failures when sending commands to multiple devices at the same time, for example through automations. (by [**@marl1w**](https://github.com/marl1w))
+*   **OFF target temperature:** aligned OFF mode with the official Finder app: 35 °C in SUMMER and 5 °C in WINTER. (by [**@marl1w**](https://github.com/marl1w))
+*   **Local schedule resolution:** added local resolution of scheduled set points in AUTO mode. (by [**@marl1w**](https://github.com/marl1w))
+*   **Stale device removal:** added support for removing stale or orphaned thermostat devices from the Home Assistant UI when deleted from the Finder account. (by [**@marl1w**](https://github.com/marl1w))
+*   **Schedule sensor:** fixed a `TypeError` when `setPoint` data is formatted as a dictionary. (by [**@7AC**](https://github.com/7AC))
+
+Thanks to [**@marl1w**](https://github.com/marl1w) and [**@7AC**](https://github.com/7AC) for these contributions!
+
 ### v0.5.0
 
 This version brings substantial improvements and new features, largely thanks to contributions from @marl1w.
