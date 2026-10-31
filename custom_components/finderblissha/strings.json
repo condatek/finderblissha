@@ -41,6 +41,7 @@
       "temperature": { "name": "Temperature" },
       "humidity": { "name": "Humidity" },
       "battery": { "name": "Battery" },
+      "battery_voltage": { "name": "Battery voltage" },
       "wifi_level": { "name": "WiFi level" },
       "mode": { "name": "Mode" },
       "manual_set_point": { "name": "Manual set point" },
@@ -54,6 +55,22 @@
     },
     "select": {
       "sync_profile": { "name": "Sync profile" }
+    }
+  },
+  "services": {
+    "set_schedule": {
+      "name": "Set schedule",
+      "description": "Writes the thermostat's active weekly schedule and switches it to its schedule (AUTO). Temperatures are in °C, rounded to 0.5 and kept between 5 and 20. Nothing is sent if the thermostat already runs this schedule.",
+      "fields": {
+        "blocks": {
+          "name": "Blocks (every day)",
+          "description": "One list of time blocks used for all seven days. Each block has from, to (HH:MM) and temp. The first starts at 00:00, each starts where the previous ends, and the last ends at 24:00."
+        },
+        "days": {
+          "name": "Blocks per day",
+          "description": "A list of blocks for each of the seven days, keyed mon..sun (or 1..7). Use either this or Blocks, not both."
+        }
+      }
     }
   }
 }

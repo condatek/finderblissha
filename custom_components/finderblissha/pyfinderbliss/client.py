@@ -17,6 +17,7 @@ from .const import (
     PING_INTERVAL,
     SCOPE,
 )
+from . import capture
 from .device_parser import parse_device_data
 
 _LOGGER = logging.getLogger(__name__)
@@ -218,6 +219,7 @@ class BlissClientAsync:
                                         self._last_server_sync_version,
                                     )
                                     payload = arg["serverPayload"]
+                                    capture.on_sync(payload)
                                     return parse_device_data(payload)
 
             except (asyncio.TimeoutError, ConnectionResetError, aiohttp.ClientError) as err:
@@ -256,6 +258,7 @@ class BlissClientAsync:
                 payload_to_send[key] = "{}" if key in ("settings", "measures") else "[]"
 
         client_payload_string = json.dumps({"devices": [payload_to_send]}, separators=(',', ':'))
+        capture.on_send(payload_to_send)
 
         sync_request_message = {
             "type": 1,
@@ -283,6 +286,7 @@ class BlissClientAsync:
 
                 for data in frames:
                     if data.get("target") in ("SyncRequest", "SyncResponse") and "arguments" in data:
+                        capture.on_answer(data)
                         for arg in data["arguments"]:
                             if "serverSyncVersion" in arg:
                                 self._last_server_sync_version = arg["serverSyncVersion"]
@@ -312,7 +316,9 @@ class BlissClientAsync:
         try:
             while True:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=1)
-                await self._handle_message(msg)
+                for data in await self._handle_message(msg):
+                    if isinstance(data, dict) and "arguments" in data:
+                        capture.on_answer(data)
         except asyncio.TimeoutError:
             pass
 

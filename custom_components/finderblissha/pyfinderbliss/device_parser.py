@@ -54,8 +54,23 @@ def determine_bliss2_mode(measures: dict) -> str:
     }.get(mode, "unknown")
 
 
+def schedule_set_point_value(raw):
+    """A schedule set point in tenths of C, from either shape the API uses.
+
+    BLISS2 schedules carry {"unit": "C", "value": 210}; older payloads a bare
+    210. Anything else comes back unchanged so it still compares unequal.
+    """
+    if isinstance(raw, dict):
+        return raw.get("value")
+    return raw
+
+
 def normalize_schedule_days(days: list) -> list:
-    """Normalize schedule days for reliable comparison."""
+    """Normalize schedule days for reliable comparison.
+
+    Set points compare by value, so a dict-shaped and an integer set point
+    for the same temperature are the same schedule.
+    """
     normalized = []
     for day_entry in sorted(days or [], key=lambda d: d.get("day", 0)):
         set_points = sorted(
@@ -65,7 +80,8 @@ def normalize_schedule_days(days: list) -> list:
         normalized.append({
             "day": day_entry.get("day"),
             "setPoints": [
-                {"hour": sp.get("hour"), "minute": sp.get("minute"), "setPoint": sp.get("setPoint")}
+                {"hour": sp.get("hour"), "minute": sp.get("minute"),
+                 "setPoint": schedule_set_point_value(sp.get("setPoint"))}
                 for sp in set_points
             ]
         })
@@ -110,7 +126,8 @@ def parse_device(device: dict) -> dict:
     status = measures_parsed.get("status", "N/A")
     humidity = parse_value(measures_parsed.get("humidity"))
     wifi_level = measures_parsed.get("wifiLevel", "N/A")
-    battery_level = parse_battery_level(measures_parsed.get("batteryLevel"))
+    battery_level = parse_battery_level(measures_parsed.get("batteryLevel"), tag)
+    battery_voltage = parse_battery_voltage(measures_parsed.get("batteryLevel"))
 
     # Temperature
     temperature_value = parse_temperature(measures_parsed.get("temperature"))
@@ -174,6 +191,7 @@ def parse_device(device: dict) -> dict:
         "mode_setting": mode_setting,
         "wifi_level": wifi_level,
         "battery_level": battery_level,
+        "battery_voltage": battery_voltage,
         "season": season,
         "thermal_differential": thermal_differential,
         "update_step": update_step,
@@ -248,22 +266,75 @@ def parse_set_point(set_point_data):
     return "N/A"
 
 
-def parse_battery_level(raw):
+def parse_battery_voltage(raw):
+    """Raw battery reading (tenths of volts, bare or {"value": n}) in volts."""
+    if isinstance(raw, dict):
+        raw = raw.get("value")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return round(raw / 10, 2)
+
+
+# BLISS2: 3xAAA alkaline in series (3S). Per-cell charge left against
+# per-cell voltage under a light load, from the usual alkaline discharge
+# curve: about 1.5 V fresh, most of the capacity between 1.4 V and 1.2 V,
+# empty at 1.1 V (3.3 V for the pack). The steep low end puts the per-cell
+# voltage at which the app drops to one dot on a BLISS1 (2.55 V / 2 cells
+# = 1.275 V) at about 27%, so a one-dot BLISS2 reads low. Refine against
+# the Battery voltage sensor.
+BLISS2_CELLS = 3
+ALKALINE_CELL_CURVE = (
+    (1.10, 0),
+    (1.15, 4),
+    (1.20, 10),
+    (1.25, 20),
+    (1.30, 35),
+    (1.35, 55),
+    (1.40, 75),
+    (1.45, 90),
+    (1.50, 100),
+)
+# Outside this per-cell range the reading is not an alkaline cell voltage
+# (another unit, a mains adapter, a fault): report no percentage at all.
+PLAUSIBLE_CELL_VOLTS = (0.8, 1.8)
+
+
+def _alkaline_percent(cell_volts: float) -> int:
+    curve = ALKALINE_CELL_CURVE
+    if cell_volts <= curve[0][0]:
+        return 0
+    if cell_volts >= curve[-1][0]:
+        return 100
+    for (v0, p0), (v1, p1) in zip(curve, curve[1:]):
+        if v0 <= cell_volts <= v1:
+            return round(p0 + (p1 - p0) * (cell_volts - v0) / (v1 - v0))
+    return 0
+
+
+def parse_battery_level(raw, tag=None):
     """Convert raw battery voltage (tenths of volts) to percentage.
 
-    4xAA (2S2P): ~3.0V fresh, ~2.1V cutoff.
+    BLISS1: 4xAA (2S2P): ~3.0V fresh, ~2.1V cutoff.
     Calibrated against the Finder Bliss iOS app's 3-dot display:
       1 dot  = below ~2.55V
       2 dots = ~2.55V to ~2.85V
       3 dots = above ~2.85V
+
+    BLISS2: 3xAAA in series, see ALKALINE_CELL_CURVE. A reading that is not
+    a plausible voltage for the pack gives "N/A" rather than a made-up 100%.
     """
-    if isinstance(raw, dict):
-        raw = raw.get("value")
-    if not isinstance(raw, (int, float)):
+    volts = parse_battery_voltage(raw)
+    if volts is None:
         return "N/A"
+    if tag == "BLISS2":
+        cell = volts / BLISS2_CELLS
+        if not PLAUSIBLE_CELL_VOLTS[0] <= cell <= PLAUSIBLE_CELL_VOLTS[1]:
+            return "N/A"
+        return _alkaline_percent(cell)
+    raw_tenths = volts * 10
     VOLTAGE_MAX = 30  # 3.0V (fresh 2S2P alkaline)
     VOLTAGE_MIN = 21  # 2.1V (cutoff)
-    pct = (raw - VOLTAGE_MIN) / (VOLTAGE_MAX - VOLTAGE_MIN) * 100
+    pct = (raw_tenths - VOLTAGE_MIN) / (VOLTAGE_MAX - VOLTAGE_MIN) * 100
     return max(0, min(100, round(pct)))
 
 

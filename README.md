@@ -28,6 +28,28 @@ A Home Assistant custom integration for **Finder BLISS** thermostats using the u
 - **HVAC action** — shows Heating, Cooling, or Idle based on the relay status  
 - **Schedule presets** — select named schedule programs configured in the Finder Bliss app (e.g. "Estate", "Freddo PT")  
   
+### Set schedule (service)  
+
+`finderblissha.set_schedule` writes the thermostat's active weekly schedule and switches it to schedule mode (AUTO). Use it when there is no named preset to select, for example on a BLISS2, where the app cannot create presets.  
+
+- `blocks`: one list of time blocks used on all seven days, or  
+- `days`: one list per day, keyed `mon`..`sun` (or `1`..`7`); all seven are required.  
+
+Each block has `from`, `to` (`HH:MM`) and `temp` (°C). A day starts at `00:00`, each block starts where the previous one ends, and the last ends at `24:00`. Temperatures are rounded to 0.5 °C and kept between 5 and 20 °C. Nothing is sent when the thermostat already runs that schedule in AUTO. The call fails if the Finder cloud does not confirm the change.  
+
+```yaml
+action: finderblissha.set_schedule
+target:
+  entity_id: climate.living_room_thermostat
+data:
+  blocks:
+    - { from: "00:00", to: "06:30", temp: 17 }
+    - { from: "06:30", to: "22:00", temp: 19.5 }
+    - { from: "22:00", to: "24:00", temp: 17 }
+```
+
+Quote the times. Unquoted YAML reads `22:00` as the number 1320, which the service takes as minutes since midnight, so it still works; but a bare number always means minutes, so `to: 7` is 00:07, not 07:00. At most 12 blocks per day.  
+
 ### Sensors  
   
 | Sensor | Device class | Unit | Category |  
@@ -35,6 +57,7 @@ A Home Assistant custom integration for **Finder BLISS** thermostats using the u
 | Temperature | `temperature` | °C | — |  
 | Humidity | `humidity` | % | — |  
 | Battery | `battery` | % | Diagnostic |  
+| Battery voltage | `voltage` | V | Diagnostic |  
 | WiFi level | `signal_strength` | dBm | Diagnostic |  
 | Mode | — | — | Diagnostic |  
 | Set point | `temperature` | °C | — |  
@@ -46,7 +69,7 @@ A Home Assistant custom integration for **Finder BLISS** thermostats using the u
   
 The **Schedule** sensor shows the active preset name as its state and exposes per-day time blocks as attributes (e.g. `Monday: ["06:00-20:00: 19.0°C", "20:00-24:00: 18.0°C"]`).  
   
-Battery percentage is calibrated for 4xAA batteries in a 2S2P configuration (2.1V–3.0V range).  
+Battery percentage depends on the model. On BLISS1 (4xAA, 2S2P) it is linear from 2.1 V to 3.0 V, calibrated against the app's dots. On Bliss 2 (3xAAA in series) it follows an alkaline discharge curve from 3.3 V (empty) to 4.5 V (full), so one dot in the app should read below 30% (a starting calibration, to be refined against **Battery voltage**). A Bliss 2 reading outside 2.4–5.4 V shows the percentage as unknown. **Battery voltage** shows the raw reading.  
   
 ### Sync profile (select entity)  
   
@@ -108,10 +131,28 @@ To update credentials later, go to the integration entry, click the three-dot me
 - **Off mode** on BLISS1 devices activates frost protection (anti-freeze), not a full power-off.  
 - Thermal differential (hysteresis) is exposed as a read-only diagnostic sensor. It can be configured from the Finder Bliss app.  
 - The API is unofficial and may break if Finder changes their cloud service.  
+- **State capture (off by default):** to see exactly what changes when you edit something in the Finder app, set the logger `custom_components.finderblissha.capture` to `debug` (Developer tools → Actions → `logger.set_level`). The first sync logs each device's settings as `path = value`, and later syncs and every write log only what changed. Device identifiers, names and account data are redacted. Set it back to `warning` when done. Debug logging for the integration as a whole does not turn it on.  
 
 ---
 
 ## Changelog
+
+### v0.5.9
+
+*   **Fix Bliss 2 battery level:** it was calibrated for the BLISS1's 2S2P pack, so every Bliss 2 read 100%. It now uses a 3S alkaline curve, and an implausible reading shows as unknown.
+*   New **Battery voltage** diagnostic sensor with the raw reading.
+*   The state capture includes `measures.batteryLevel`.
+
+### v0.5.8
+
+*   **Fix `set_schedule` on Bliss 2:** set points are now written in the shape the device reports (`{"unit": "C", "value": 190}` on a Bliss 2, not a bare `190`). A schedule identical to the current one is recognised as such, so nothing is sent.
+*   The target temperature in schedule mode now reads dict-shaped schedule set points too.
+*   **Opt-in state capture** for diagnosing writes: see Notes.
+
+### v0.5.7
+
+*   **New service `finderblissha.set_schedule`:** writes the active schedule from time blocks (one list for every day, or one per day), then switches to AUTO. It is idempotent and confirmed against the server.
+*   Adds `services.yaml`, English translations and unit tests.
 
 ### v0.5.0
 

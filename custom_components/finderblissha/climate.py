@@ -9,6 +9,7 @@ import zoneinfo
 from datetime import datetime
 from typing import Any
 
+import voluptuous as vol
 from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
@@ -18,7 +19,8 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
@@ -27,8 +29,9 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
-from .pyfinderbliss.device_parser import normalize_schedule_days
+from .pyfinderbliss.device_parser import normalize_schedule_days, schedule_set_point_value
 from .pyfinderbliss.pyfinderbliss_wrapper import BlissDevice, PyFinderBlissAPI
+from .pyfinderbliss.schedule import ScheduleError, build_schedule_days
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +39,21 @@ _LOGGER = logging.getLogger(__name__)
 # Commands confirm and clear it themselves; this only bounds the damage if the
 # task running one is cancelled before it can.
 OPTIMISTIC_TIMEOUT = 90
+
+SERVICE_SET_SCHEDULE = "set_schedule"
+
+# Times stay loose here (a string or YAML's base-60 integer); the schedule
+# builder parses and range-checks them, and checks the blocks fit together.
+_BLOCK_SCHEMA = vol.Schema({
+    vol.Required("from"): vol.Any(int, cv.string),
+    vol.Required("to"): vol.Any(int, cv.string),
+    vol.Required("temp"): vol.Coerce(float),
+})
+_BLOCKS_SCHEMA = vol.All(cv.ensure_list, [_BLOCK_SCHEMA])
+SET_SCHEDULE_SCHEMA = {
+    vol.Optional("blocks"): _BLOCKS_SCHEMA,
+    vol.Optional("days"): {vol.Any(int, cv.string): _BLOCKS_SCHEMA},
+}
 
 
 def _scheduled_set_point(days: list, tz_name: str | None) -> float | None:
@@ -77,7 +95,7 @@ def _scheduled_set_point(days: list, tz_name: str | None) -> float | None:
                 if sp.get("hour", 0) * 60 + sp.get("minute", 0) <= minutes_now
             ]
         if set_points:
-            value = set_points[-1].get("setPoint")
+            value = schedule_set_point_value(set_points[-1].get("setPoint"))
             if isinstance(value, (int, float)):
                 return value / 10
         day = day - 1 or 7
@@ -101,6 +119,11 @@ async def async_setup_entry(
             entities.append(FinderBlissClimate(coordinator, api, device))
 
     async_add_entities(entities, True)
+
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        SERVICE_SET_SCHEDULE, SET_SCHEDULE_SCHEMA, "async_set_schedule"
+    )
 
 
 class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
@@ -410,3 +433,25 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
             self._api.async_set_mode, self._device_serial, "AUTO",
             optimistic={"mode": "auto"},
         )
+
+    async def async_set_schedule(self, blocks: list | None = None, days: dict | None = None) -> None:
+        """Write the active schedule from time blocks, then switch to AUTO.
+
+        Temperatures are C, rounded to 0.5 and clamped to 5-20. Nothing is sent
+        when the device already runs exactly this schedule in AUTO.
+        """
+        try:
+            built = build_schedule_days(blocks=blocks, days=days)
+        except ScheduleError as err:
+            raise ServiceValidationError(str(err)) from err
+
+        # One lock acquisition for both writes, as in async_set_hvac_mode.
+        async with self._command_lock:
+            await self._async_command(
+                self._api.async_set_automatic_schedule, self._device_serial, built,
+                optimistic={"automatic_schedule": {"days": built}},
+            )
+            await self._async_command(
+                self._api.async_resume_schedule, self._device_serial,
+                optimistic={"mode": "auto"},
+            )
