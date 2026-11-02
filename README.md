@@ -141,6 +141,22 @@ To update credentials later, go to the integration entry, click the three-dot me
 
 ## Changelog
 
+### v0.5.11-testing1 (pre-release)
+
+*   **Fresh cloud state before skipping commands:** schedule writes and switching to AUTO now bypass the snapshot cache before deciding that no write is needed. Changes made through the Finder app are respected, and unavailable or partial cloud responses fail instead of reporting success from cached state.
+*   **Safer diagnostic capture:** centralized JSON decoding handles leading whitespace and redacts malformed or undecodable serialized settings and schedules. Capture errors no longer include exception details that could expose raw payload values.
+*   **BLISS2 command acknowledgements:** wait up to 15 seconds for an ACK across all intervening frames, replacing the 3-second per-frame wait and frame-count limit for BLISS2. BLISS1 uses a 3-second overall acknowledgement budget. Reset the websocket after an ACK timeout or connection error, and bound follow-up response draining. Commands still require cloud settings read-back before reporting success.
+*   **BLISS2 HVAC mode display:** after confirmation, show the mode held in cloud settings while the thermostat's own echo catches up, preventing OFF from bouncing back to HEAT. Pending commands retain priority, and `operating_mode` continues to expose the device-reported mode. These changes address the problems reported and locally patched by [**@Mangillone**](https://github.com/Mangillone) in [#16](https://github.com/condatek/finderblissha/issues/16); physical-device confirmation is pending.
+*   Added regression tests covering BLISS1, BLISS2, Home Assistant service calls, delayed and missing acknowledgements, HVAC mode display and capture redaction; all 133 tests pass.
+
+### v0.5.10
+
+*   **BLISS2 schedules and battery reporting:** includes the `finderblissha.set_schedule` service, device-shaped schedule set points, improved target-temperature display, a model-specific battery estimate and a Battery voltage diagnostic sensor, contributed by [**@Airbloomer**](https://github.com/Airbloomer) in [#17](https://github.com/condatek/finderblissha/pull/17). See v0.5.7-v0.5.9 below for implementation details. The schedule service replaces the active weekly schedule; temperatures are rounded to 0.5 °C and limited to 5-20 °C.
+*   **Diagnostics and validation:** includes opt-in state capture, service descriptions, English translations, unit tests and CI checks for tests, HACS and hassfest, also contributed by @Airbloomer in #17. Battery percentages remain approximate.
+*   **BLISS1 sync profiles:** corrected the documented intervals to **30 / 15 / 5 / 1 minutes**, thanks to [**@LorenzoRogai**](https://github.com/LorenzoRogai) in [#18](https://github.com/condatek/finderblissha/pull/18), and clarified that these profiles apply to BLISS1 only.
+*   **Changelog:** restored the missing v0.5.6 entry and contributor credits to @marl1w and @7AC.
+*   **Branding:** added integration icon and logo assets for local branding in Home Assistant 2026.3+, and displayed the logo in the README.
+
 ### v0.5.9
 
 *   **Fix Bliss 2 battery level:** it was calibrated for the BLISS1's 2S2P pack, so every Bliss 2 read 100%. It now uses a 3S alkaline curve, and an implausible reading shows as unknown.

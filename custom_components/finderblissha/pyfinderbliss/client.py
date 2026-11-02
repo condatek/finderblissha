@@ -22,6 +22,12 @@ from .device_parser import parse_device_data
 
 _LOGGER = logging.getLogger(__name__)
 
+# One budget for the command acknowledgement, including intervening pings.
+# BLISS2 can acknowledge slowly; BLISS1 is reported to reply promptly.
+BLISS1_ACK_TIMEOUT = 3
+BLISS2_ACK_TIMEOUT = 15
+ACK_DRAIN_TIMEOUT = 1
+
 
 class BlissCommandError(Exception):
     """A command was not acknowledged, or not applied, by the Finder cloud."""
@@ -238,11 +244,11 @@ class BlissClientAsync:
             raise Exception("Connection reset by server during device fetch.") from last_error
         raise Exception(f"Failed to fetch devices after websocket reconnect attempts: {last_error}")
 
-    async def send_operation(self, device_data: dict, operation_key: str = "ALL", debug_responses: int = 3):
+    async def send_operation(self, device_data: dict, operation_key: str = "ALL"):
         async with self._ws_lock:
-            await self._send_operation(device_data, operation_key, debug_responses)
+            await self._send_operation(device_data, operation_key)
 
-    async def _send_operation(self, device_data: dict, operation_key: str = "ALL", debug_responses: int = 3):
+    async def _send_operation(self, device_data: dict, operation_key: str = "ALL"):
         if not self._ws or self._ws.closed:
             _LOGGER.debug("WebSocket closed before send_operation, reconnecting")
             await self.connect_ws()
@@ -278,53 +284,54 @@ class BlissClientAsync:
 
         await self._ws.send_str(json.dumps(sync_request_message) + "\x1e")
 
-        new_version_received = False
-        for i in range(debug_responses):
-            try:
-                msg = await asyncio.wait_for(self._ws.receive(), timeout=3)
-                frames = await self._handle_message(msg)
+        try:
+            timeout = BLISS2_ACK_TIMEOUT if device_data.get("tag") == "BLISS2" else BLISS1_ACK_TIMEOUT
+            await self._wait_for_command_ack(timeout)
+        except (BlissCommandError, ConnectionResetError, aiohttp.ClientError):
+            # A late ACK must not satisfy the next command on this socket.
+            await self._reset_connection()
+            raise
+        await self._drain_command_responses()
 
-                for data in frames:
-                    if data.get("target") in ("SyncRequest", "SyncResponse") and "arguments" in data:
+    async def _wait_for_command_ack(self, timeout: float):
+        """Wait for a version acknowledgement within one overall deadline.
+
+        This only acknowledges transport; the API wrapper separately reads
+        cloud settings back to verify that the command was applied.
+        """
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    msg = await self._ws.receive()
+                    for data in await self._handle_message(msg):
+                        if data.get("target") not in ("SyncRequest", "SyncResponse"):
+                            continue
                         capture.on_answer(data)
-                        for arg in data["arguments"]:
+                        for arg in data.get("arguments", []):
                             if "serverSyncVersion" in arg:
                                 self._last_server_sync_version = arg["serverSyncVersion"]
                                 _LOGGER.debug(
                                     "Setter ACK, serverSyncVersion: %s",
                                     self._last_server_sync_version,
                                 )
-                                new_version_received = True
-                                break
-                        if new_version_received:
-                            break
-                if new_version_received:
-                    break
+                                return
+        except TimeoutError as err:
+            raise BlissCommandError(
+                f"Server did not acknowledge the command within {timeout} seconds"
+            ) from err
 
-            except asyncio.TimeoutError:
-                if i == 0:
-                    _LOGGER.debug("No immediate response from server after command")
-                break
-            except ConnectionResetError:
-                raise Exception("Connection reset by server during command acknowledgement.")
+    async def _drain_command_responses(self):
+        """Discard follow-up payloads before a fresh poll, with a fixed budget.
 
-        # Drain any follow-up messages the server sends after the ACK
-        # (e.g. updated device data). If left in the buffer, the next
-        # get_devices() call would pick them up as a partial response.
-        # Runs on the un-acknowledged path too, so a failed command still
-        # leaves a clean buffer for the retry.
+        A per-frame timeout would let a stream of pings hold the command lock
+        indefinitely. Follow-up payloads can also be partial device snapshots.
+        """
         try:
-            while True:
-                msg = await asyncio.wait_for(self._ws.receive(), timeout=1)
-                for data in await self._handle_message(msg):
-                    if isinstance(data, dict) and "arguments" in data:
-                        capture.on_answer(data)
-        except asyncio.TimeoutError:
+            async with asyncio.timeout(ACK_DRAIN_TIMEOUT):
+                while True:
+                    msg = await self._ws.receive()
+                    for data in await self._handle_message(msg):
+                        if isinstance(data, dict) and "arguments" in data:
+                            capture.on_answer(data)
+        except TimeoutError:
             pass
-
-        # An un-acknowledged command is a dropped one. Returning normally here
-        # would report success for a write the server never took, which then
-        # surfaces a poll or two later as the old value coming back - looking
-        # exactly like somebody changed it by hand.
-        if not new_version_received:
-            raise BlissCommandError("Server did not acknowledge the command")

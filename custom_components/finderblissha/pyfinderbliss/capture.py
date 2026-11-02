@@ -21,6 +21,8 @@ and anything resembling them (keys included) are redacted; the time zone
 shows only as <redacted>. Devices are labelled by position and model only. Measures are
 reduced to the few fields that matter for commands. Payload sizes are
 bounded. Nothing is logged with the logger at its default level.
+Undecodable serialized settings are redacted. Capture errors omit exception
+details because those can contain raw payload values.
 """
 
 from __future__ import annotations
@@ -65,12 +67,18 @@ def enabled() -> bool:
     return _LOGGER.isEnabledFor(logging.DEBUG)
 
 
-def _load(value):
-    if isinstance(value, str) and value[:1] in ("{", "["):
+def _load(value, *, structured: bool = False):
+    """Decode containers without letting undecodable JSON reach the logs.
+
+    Settings, schedules and measures must be containers when serialized.
+    Elsewhere, ordinary scalar strings remain useful diagnostic values.
+    """
+    if isinstance(value, str) and (structured or value.lstrip()[:1] in ("{", "[")):
         try:
-            return json.loads(value)
+            decoded = json.loads(value)
         except json.JSONDecodeError:
-            return value
+            return REDACTED
+        return decoded if isinstance(decoded, (dict, list)) else REDACTED
     return value
 
 
@@ -114,9 +122,9 @@ def device_view(device: dict) -> dict[str, str]:
     for field in _DEVICE_FIELDS:
         if field in device:
             _flatten(device[field], field, out, field)
-    _flatten(device.get("settings"), "settings", out)
-    _flatten(device.get("schedules"), "schedules", out)
-    measures = _load(device.get("measures"))
+    for field in ("settings", "schedules"):
+        _flatten(_load(device.get(field), structured=True), field, out)
+    measures = _load(device.get("measures"), structured=True)
     if isinstance(measures, dict):
         for field in _MEASURE_FIELDS:
             if field in measures:
@@ -183,7 +191,7 @@ def on_sync(payload) -> None:
                 _emit(f"capture sync {label} changes", _diff(previous, view))
             _last[_key(device)] = view
     except Exception:  # noqa: BLE001 - capture must never break a sync
-        _LOGGER.debug("capture: could not read sync payload", exc_info=True)
+        _LOGGER.debug("capture: could not read sync payload")
 
 
 def on_send(device: dict) -> None:
@@ -195,7 +203,7 @@ def on_send(device: dict) -> None:
         _emit(f"capture send {_label(device)} changes against last sync",
               _diff(_last.get(_key(device), {}), view))
     except Exception:  # noqa: BLE001
-        _LOGGER.debug("capture: could not read outgoing payload", exc_info=True)
+        _LOGGER.debug("capture: could not read outgoing payload")
 
 
 def on_answer(frame: dict) -> None:
@@ -214,4 +222,4 @@ def on_answer(frame: dict) -> None:
                         _flatten(v, f"arguments[{i}].{k}", out, k)
         _emit("capture answer", [f"  {p} = {out[p]}" for p in sorted(out, key=_order)])
     except Exception:  # noqa: BLE001
-        _LOGGER.debug("capture: could not read server answer", exc_info=True)
+        _LOGGER.debug("capture: could not read server answer")

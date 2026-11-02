@@ -30,7 +30,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 from .pyfinderbliss.device_parser import normalize_schedule_days, schedule_set_point_value
-from .pyfinderbliss.pyfinderbliss_wrapper import BlissDevice, PyFinderBlissAPI
+from .pyfinderbliss.pyfinderbliss_wrapper import BlissDevice, PyFinderBlissAPI, commanded_mode
 from .pyfinderbliss.schedule import ScheduleError, build_schedule_days
 
 _LOGGER = logging.getLogger(__name__)
@@ -258,6 +258,11 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
     @property
     def hvac_mode(self) -> HVACMode:
         mode = self._device_value("mode")
+        dev = self._find_device()
+        # Settings confirm the requested mode before the BLISS2 hardware echo
+        # catches up. Keep pending commands visible until confirmation/failure.
+        if "mode" not in self._optimistic and dev is not None and dev.tag == "BLISS2":
+            mode = commanded_mode(dev) or mode
         if mode is None or str(mode).lower() == "off":
             return HVACMode.OFF
         # Both "auto" and "manual" resolve to HEAT/COOL based on season
