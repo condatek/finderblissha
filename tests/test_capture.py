@@ -96,6 +96,69 @@ def test_send_and_answer(caplog, fresh_capture):
     assert "0f8fad5b" not in answer
 
 
+@pytest.mark.parametrize("event", ["sync", "send"])
+def test_whitespace_prefixed_json_is_decoded_and_redacted(caplog, fresh_capture, event):
+    fresh_capture.setLevel(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger=capture.CAPTURE_LOGGER_NAME)
+    device = bliss2_device(extra_settings={
+        "wifi": {"password": "private-value"},
+        "nested": ' \n {"password": "nested-value", "mode": "AUTO"}',
+    })
+    for field in ("settings", "schedules", "measures"):
+        device[field] = " \n\t" + device[field]
+    if event == "sync":
+        capture.on_sync(" \n" + payload(device))
+    else:
+        capture.on_send(device)
+    assert "private-value" not in caplog.text
+    assert "nested-value" not in caplog.text
+    assert 'settings.primary.mode' in caplog.text
+    assert 'settings.nested.mode' in caplog.text
+    assert 'measures.batteryLevel.value' in caplog.text
+
+
+@pytest.mark.parametrize("field", ["settings", "schedules"])
+@pytest.mark.parametrize("serialized", [
+    '{"wifi":{"password":"private-value"}',
+    ' \n [{"password":"private-value"}',
+    'password=private-value',
+    '"private-value"',
+])
+def test_undecodable_structured_fields_are_redacted(field, serialized):
+    device = bliss2_device()
+    device[field] = serialized
+    view = capture.device_view(device)
+    assert "private-value" not in str(view)
+    assert capture.REDACTED in view[field]
+
+
+def test_malformed_nested_json_is_redacted():
+    device = bliss2_device(extra_settings={"nested": ' \n {"password":"private-value"'})
+    view = capture.device_view(device)
+    assert "private-value" not in str(view)
+    assert capture.REDACTED in view["settings.nested"]
+
+
+@pytest.mark.parametrize("event", ["sync", "send", "answer"])
+def test_capture_errors_do_not_log_exception_values(caplog, fresh_capture, monkeypatch, event):
+    fresh_capture.setLevel(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger=capture.CAPTURE_LOGGER_NAME)
+
+    def fail(*args):
+        raise ValueError("private-value")
+
+    monkeypatch.setattr(capture, "_emit", fail)
+    if event == "sync":
+        capture.on_sync(payload(bliss2_device()))
+    elif event == "send":
+        capture.on_send(bliss2_device())
+    else:
+        capture.on_answer({"arguments": []})
+    assert "could not read" in caplog.text
+    assert "private-value" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
 def test_capture_never_raises(fresh_capture):
     fresh_capture.setLevel(logging.DEBUG)
     capture.on_sync("not json")

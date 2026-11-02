@@ -68,6 +68,75 @@ async def test_resume_schedule_is_a_no_op_when_already_auto(make_api):
     assert cloud.sent == []
 
 
+@pytest.mark.parametrize("device_factory", [bliss1_device, bliss2_device])
+async def test_resume_schedule_reads_external_changes_despite_recent_cache(make_api, device_factory):
+    api, cloud = make_api(device_factory())
+    await api.async_resume_schedule(SERIAL)
+    assert cloud.sent == []
+
+    settings = cloud.settings()
+    if "primary" in settings:
+        settings["primary"]["mode"] = "OFF"
+    else:
+        settings["mode"] = "OFF"
+    cloud.device["settings"] = json.dumps(settings)
+    cloud.device["syncVersion"] += 1
+
+    await api.async_resume_schedule(SERIAL)
+    assert len(cloud.sent) == 1
+    assert cloud.sent[0]["syncVersion"] == cloud.device["syncVersion"] - 1
+    restored = cloud.settings()
+    assert restored.get("primary", restored)["mode"] == "AUTO"
+
+
+@pytest.mark.parametrize("device_factory", [bliss1_device, bliss2_device])
+async def test_schedule_reads_external_changes_despite_recent_cache(make_api, device_factory):
+    api, cloud = make_api(device_factory())
+    await api.async_set_automatic_schedule(SERIAL, APP_DAYS)
+    assert cloud.sent == []
+
+    settings = cloud.settings()
+    settings["automaticSchedule"]["days"] = []
+    settings["thermalDifferential"] = 4
+    cloud.device["settings"] = json.dumps(settings)
+    cloud.device["syncVersion"] += 1
+
+    await api.async_set_automatic_schedule(SERIAL, APP_DAYS)
+    assert len(cloud.sent) == 1
+    assert cloud.settings()["automaticSchedule"]["days"] == (
+        APP_DAYS_BLISS2 if cloud.device["tag"] == "BLISS2" else APP_DAYS
+    )
+    assert cloud.settings()["thermalDifferential"] == 4
+    assert cloud.sent[0]["syncVersion"] == cloud.device["syncVersion"] - 1
+
+
+async def test_resume_schedule_does_not_report_success_if_refresh_fails(make_api, monkeypatch):
+    api, cloud = make_api(bliss2_device())
+    await api.async_resume_schedule(SERIAL)
+    api._max_retries = 1
+
+    async def unavailable():
+        raise OSError("Cloud unavailable")
+
+    monkeypatch.setattr(cloud, "get_devices", unavailable)
+    with pytest.raises(Exception, match="Failed to fetch devices"):
+        await api.async_resume_schedule(SERIAL)
+    assert cloud.sent == []
+
+
+async def test_resume_schedule_does_not_skip_using_a_carried_over_device(make_api, monkeypatch):
+    api, cloud = make_api(bliss2_device())
+    await api.async_resume_schedule(SERIAL)
+
+    async def partial_response():
+        return []
+
+    monkeypatch.setattr(cloud, "get_devices", partial_response)
+    with pytest.raises(BlissCommandError, match="partial cloud response"):
+        await api.async_resume_schedule(SERIAL)
+    assert cloud.sent == []
+
+
 async def test_resume_schedule_clears_a_pending_manual_timer(make_api):
     api, cloud = make_api(bliss2_device(mode="AUTO", extra_settings={"manualTimer": {"value": 190}}))
     await api.async_resume_schedule(SERIAL)

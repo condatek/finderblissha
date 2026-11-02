@@ -43,6 +43,42 @@ async def test_service_is_registered(hass, cloud):
     assert hass.states.get(ENTITY) is not None
 
 
+async def test_confirmed_off_survives_stale_auto_echo_and_refresh(hass, cloud):
+    measures = json.loads(cloud.device["measures"])
+    measures["mode"] = 1
+    cloud.device["measures"] = json.dumps(measures)
+    settings = cloud.settings()
+    settings["primary"]["mode"] = "AUTO"
+    cloud.device["settings"] = json.dumps(settings)
+    coordinator = next(iter(hass.data[DOMAIN].values()))["coordinator"]
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(ENTITY).state == "heat"
+
+    await hass.services.async_call("climate", "set_hvac_mode", {
+        "entity_id": ENTITY, "hvac_mode": "off",
+    }, blocking=True)
+    assert cloud.settings()["primary"]["mode"] == "OFF"
+    assert hass.states.get(ENTITY).state == "off"
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    state = hass.states.get(ENTITY)
+    assert state.state == "off"
+    assert state.attributes["temperature"] == 5.0
+    assert state.attributes["operating_mode"] == "auto"
+
+
+async def test_failed_off_command_restores_confirmed_mode(hass, cloud):
+    await call(hass, blocks=[{"from": "00:00", "to": "24:00", "temp": 17}])
+    cloud.apply_writes = False
+    with pytest.raises(HomeAssistantError, match="did not apply"):
+        await hass.services.async_call("climate", "set_hvac_mode", {
+            "entity_id": ENTITY, "hvac_mode": "off",
+        }, blocking=True)
+    assert cloud.settings()["primary"]["mode"] == "AUTO"
+    assert hass.states.get(ENTITY).state == "heat"
+
+
 async def test_all_day_17_writes_schedule_then_auto(hass, cloud):
     await call(hass, blocks=[{"from": "00:00", "to": "24:00", "temp": 17}])
 
@@ -64,6 +100,27 @@ async def test_repeating_the_call_sends_nothing(hass, cloud):
     sent = len(cloud.sent)
     await call(hass, blocks=blocks)
     assert len(cloud.sent) == sent
+
+
+@pytest.mark.parametrize("change", ["mode", "schedule", "both"])
+async def test_repeated_service_restores_changes_made_through_finder(hass, cloud, change):
+    blocks = [{"from": "00:00", "to": "24:00", "temp": 17}]
+    await call(hass, blocks=blocks)
+    sent = len(cloud.sent)
+    settings = cloud.settings()
+    if change in ("mode", "both"):
+        settings["primary"]["mode"] = "OFF"
+    if change in ("schedule", "both"):
+        settings["automaticSchedule"]["days"] = APP_DAYS_BLISS2
+    cloud.device["settings"] = json.dumps(settings)
+    cloud.device["syncVersion"] += 1
+
+    await call(hass, blocks=blocks)
+    assert len(cloud.sent) == sent + (2 if change == "both" else 1)
+    assert cloud.settings()["primary"]["mode"] == "AUTO"
+    assert cloud.settings()["automaticSchedule"]["days"] == as_bliss2(
+        build_schedule_days(blocks=blocks)
+    )
 
 
 async def test_identical_schedule_on_a_bliss2_sends_nothing_from_auto(hass, cloud):

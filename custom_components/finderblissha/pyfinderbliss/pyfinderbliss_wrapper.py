@@ -405,7 +405,7 @@ class PyFinderBlissAPI:
             None
         )
 
-    async def _async_fresh_devices(self):
+    async def _async_fresh_devices(self, *, force_refresh: bool = False):
         """Return a snapshot recent enough to build a command payload from.
 
         Every payload carries the device's own syncVersion from whichever poll
@@ -413,9 +413,15 @@ class PyFinderBlissAPI:
         server discarding it as a conflict, which is indistinguishable from
         success at this layer - so any successful write invalidates the
         snapshot for the next command.
+
+        A forced refresh must also be complete: partial responses retain
+        cached devices, which cannot establish that a command is unnecessary.
         """
-        if self._snapshot_dirty or (time.monotonic() - self._snapshot_ts) > SNAPSHOT_TTL:
-            return await self.async_get_devices()
+        if force_refresh or self._snapshot_dirty or (time.monotonic() - self._snapshot_ts) > SNAPSHOT_TTL:
+            devices = await self.async_get_devices()
+            if force_refresh and self._snapshot_dirty:
+                raise BlissCommandError("Cannot confirm current device state from a partial cloud response")
+            return devices
         return self._devices
 
     async def _async_run_command(self, device_serial: str, apply_fn, verify_fn, description: str, skip_fn=None):
@@ -427,15 +433,16 @@ class PyFinderBlissAPI:
         having changed it by hand. Returns the snapshot that confirmed it, so
         the caller can publish state it has actually verified.
 
-        When skip_fn says the fresh snapshot already holds the result, nothing
-        is sent and that snapshot is returned.
+        Commands with skip_fn bypass the snapshot cache: only a new server
+        read can establish that an external change has not made a write
+        necessary. If skip_fn matches, nothing is sent.
         """
         async with self._command_lock:
             last_error: Exception | None = None
 
             for attempt in range(1, COMMAND_ATTEMPTS + 1):
                 await self._async_ensure_authenticated()
-                devices = await self._async_fresh_devices()
+                devices = await self._async_fresh_devices(force_refresh=skip_fn is not None)
                 device = self._find_device_by_serial(device_serial, devices)
                 if device is None:
                     raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
