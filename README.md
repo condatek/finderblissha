@@ -1,5 +1,11 @@
 <p align="center">
-  <img src="custom_components/finderblissha/brand/logo.png" alt="Finder Bliss thermostat" width="280">
+  <img src="custom_components/finderblissha/brand/logo.png" alt="Finder Bliss thermostat" width="200">
+</p>
+
+<p align="center">
+  <a href="https://github.com/condatek/finderblissha/actions/workflows/validate.yml"><img src="https://github.com/condatek/finderblissha/actions/workflows/validate.yml/badge.svg?branch=main" alt="Tests and validation"></a>
+  <a href="https://github.com/condatek/finderblissha/blob/main/LICENSE"><img src="https://img.shields.io/github/license/condatek/finderblissha" alt="License"></a>
+  <a href="https://github.com/condatek/finderblissha/releases"><img src="https://img.shields.io/github/v/release/condatek/finderblissha" alt="Latest stable release"></a>
 </p>
 
 ## Disclaimer
@@ -140,6 +146,13 @@ To update credentials later, go to the integration entry, click the three-dot me
 ---
 
 ## Changelog
+
+### v0.5.12
+
+This stable release includes the BLISS2 command and state fixes from `0.5.11-testing1` and `0.5.11-testing2`; the `0.5.11` series was prerelease-only. Command handling in `0.5.11-testing2` was successfully tested on a physical BLISS2.
+
+* **Multiple thermostats:** command dispatch and confirmation check freshness for the target device only. Missing or older snapshots for another thermostat no longer block a fresh target; cached target data still cannot authorize or confirm a write.
+* **Validation:** all 156 automated tests pass, including eight new cases for missing or older target and unrelated-device snapshots.
 
 ### v0.5.11-testing2 (pre-release)
 

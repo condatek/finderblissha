@@ -303,6 +303,7 @@ class PyFinderBlissAPI:
         self._command_lock = asyncio.Lock()
         self._snapshot_ts = 0.0
         self._snapshot_dirty = True
+        self._fresh_device_keys: set[str] = set()
 
     async def _async_ensure_authenticated(self, *, force=False):
         if not force and (getattr(self._client, "is_logged_in", False)
@@ -344,6 +345,7 @@ class PyFinderBlissAPI:
             return await self._async_get_devices()
 
     async def _async_get_devices(self):
+        self._fresh_device_keys.clear()
         await self._async_ensure_authenticated()
 
         for attempt in range(self._max_retries):
@@ -354,12 +356,13 @@ class PyFinderBlissAPI:
                 for dev in devices:
                     dev._client = self._client
 
-                devices, partial = self._merge_known_devices(devices)
+                devices, fresh_keys = self._merge_known_devices(devices)
                 self._devices = devices
                 self._snapshot_ts = time.monotonic()
-                # Anything carried over still holds an older poll's syncVersion,
-                # so this snapshot must not be the base for the next command.
-                self._snapshot_dirty = partial
+                self._fresh_device_keys = fresh_keys
+                self._snapshot_dirty = any(
+                    self._device_key(device) not in fresh_keys for device in devices
+                )
                 return self._devices
 
             except Exception as e:
@@ -382,7 +385,7 @@ class PyFinderBlissAPI:
     def _device_key(device: 'BlissDevice'):
         return getattr(device, "serial_number", None) or getattr(device, "name", None)
 
-    def _merge_known_devices(self, devices: list) -> tuple[list, bool]:
+    def _merge_known_devices(self, devices: list) -> tuple[list, set[str]]:
         """Carry over devices the server left out of a partial payload.
 
         A SyncRequest normally answers with the whole inventory, but the server
@@ -393,10 +396,9 @@ class PyFinderBlissAPI:
         fails with "not found in tracked devices".
         """
         known = {self._device_key(d): d for d in self._devices}
+        fresh_keys = {self._device_key(device) for device in devices}
         if not known:
-            return devices, False
-
-        stale = False
+            return devices, fresh_keys
         for index, device in enumerate(devices):
             previous = known.get(self._device_key(device))
             if (previous is not None
@@ -404,20 +406,20 @@ class PyFinderBlissAPI:
                     and isinstance(device.sync_version, (int, float))
                     and device.sync_version < previous.sync_version):
                 devices[index] = previous
-                stale = True
+                fresh_keys.discard(self._device_key(device))
                 _LOGGER.debug("Ignoring older device snapshot for %s", self._device_key(device))
 
         seen = {self._device_key(d) for d in devices}
         missing = [device for key, device in known.items() if key not in seen]
         if not missing:
-            return devices, stale
+            return devices, fresh_keys
 
         _LOGGER.warning(
             "Partial device payload: %s of %s devices returned, carrying over %s",
             len(devices), len(known),
             ", ".join(str(getattr(d, "name", "?")) for d in missing),
         )
-        return devices + missing, True
+        return devices + missing, fresh_keys
 
     def _find_device_by_serial(self, serial: str, devices=None) -> Union['BlissDevice', None]:
         return next(
@@ -426,7 +428,7 @@ class PyFinderBlissAPI:
             None
         )
 
-    async def _async_fresh_devices(self, *, force_refresh: bool = False):
+    async def _async_fresh_devices(self, serial: str, *, force_refresh: bool = False):
         """Return a snapshot recent enough to build a command payload from.
 
         Every payload carries the device's own syncVersion from whichever poll
@@ -435,13 +437,13 @@ class PyFinderBlissAPI:
         success at this layer - so any successful write invalidates the
         snapshot for the next command.
 
-        A forced refresh must also be complete: partial responses retain
-        cached devices, which cannot establish that a command is unnecessary.
+        Only the target must be freshly returned. Missing or older unrelated
+        devices may be retained for display without blocking this command.
         """
         if force_refresh or self._snapshot_dirty or (time.monotonic() - self._snapshot_ts) > SNAPSHOT_TTL:
             devices = await self._async_get_devices()
-            if self._snapshot_dirty:
-                raise BlissCommandError("Cannot confirm current device state from a partial cloud response")
+            if serial not in self._fresh_device_keys:
+                raise BlissCommandError("Cannot confirm current device state from a partial cloud response or stale target")
             return devices
         return self._devices
 
@@ -455,7 +457,7 @@ class PyFinderBlissAPI:
                 _LOGGER.debug("Command confirmation read failed: %s", err)
                 continue
             confirmed = self._find_device_by_serial(serial, devices)
-            if not self._snapshot_dirty and confirmed is not None and verify_fn(confirmed):
+            if serial in self._fresh_device_keys and confirmed is not None and verify_fn(confirmed):
                 return devices
         return None
 
@@ -468,7 +470,7 @@ class PyFinderBlissAPI:
         """
         async with self._command_lock:
             for attempt in range(COMMAND_ATTEMPTS):
-                devices = await self._async_fresh_devices(force_refresh=True)
+                devices = await self._async_fresh_devices(device_serial, force_refresh=True)
                 device = self._find_device_by_serial(device_serial, devices)
                 if device is None:
                     raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
@@ -477,6 +479,7 @@ class PyFinderBlissAPI:
 
                 bliss2 = device.tag == "BLISS2"
                 self._snapshot_dirty = True
+                self._fresh_device_keys.discard(device_serial)
                 try:
                     # Setters must not mutate the snapshot already published to HA.
                     await apply_fn(copy.copy(device))
@@ -499,6 +502,7 @@ class PyFinderBlissAPI:
                     # Unconfirmed reads are not a safe base for subsequent writes.
                     if confirmed is None:
                         self._snapshot_dirty = True
+                        self._fresh_device_keys.discard(device_serial)
 
                 if bliss2:
                     break
