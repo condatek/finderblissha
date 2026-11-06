@@ -132,7 +132,8 @@ class BlissClientAsync:
                 except json.JSONDecodeError:
                     _LOGGER.warning("Failed to parse JSON frame")
             return parsed_frames
-        elif msg.type == aiohttp.WSMsgType.CLOSE:
+        elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED,
+                          aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
             raise ConnectionResetError("Server closed connection.")
         return []
 
@@ -169,9 +170,12 @@ class BlissClientAsync:
         }
         await self._ws.send_str(json.dumps(init_request) + "\x1e")
 
+        deadline = asyncio.get_running_loop().time() + BLISS2_ACK_TIMEOUT
         while True:
             try:
-                msg = await self._ws.receive()
+                msg = await asyncio.wait_for(
+                    self._ws.receive(), timeout=max(0, deadline - asyncio.get_running_loop().time())
+                )
                 frames = await self._handle_message(msg)
                 if any(f == {} for f in frames):
                     _LOGGER.debug("InitRequest acknowledged by server")
@@ -211,13 +215,21 @@ class BlissClientAsync:
             try:
                 await self._ws.send_str(json.dumps(sync_request) + "\x1e")
 
+                deadline = asyncio.get_running_loop().time() + ws_timeout
                 while True:
-                    msg = await asyncio.wait_for(self._ws.receive(), timeout=ws_timeout)
+                    msg = await asyncio.wait_for(
+                        self._ws.receive(), timeout=max(0, deadline - asyncio.get_running_loop().time())
+                    )
                     frames = await self._handle_message(msg)
 
                     for data in frames:
                         if data.get("target") in ("SyncRequest", "SyncResponse") and "arguments" in data:
                             for arg in data["arguments"]:
+                                # A delayed write response is not the ALL read
+                                # requested above. Legacy responses omit IDs.
+                                operation_id = arg.get("clientOperationId")
+                                if operation_id and operation_id != sync_request["arguments"][0]["clientOperationId"]:
+                                    continue
                                 if "serverPayload" in arg and arg["serverPayload"] is not None:
                                     self._last_server_sync_version = arg.get("serverSyncVersion", 0)
                                     _LOGGER.debug(
@@ -266,12 +278,13 @@ class BlissClientAsync:
         client_payload_string = json.dumps({"devices": [payload_to_send]}, separators=(',', ':'))
         capture.on_send(payload_to_send)
 
+        operation_id = str(uuid.uuid4())
         sync_request_message = {
             "type": 1,
             "target": "SyncRequest",
             "arguments": [{
                 "clientId": self._client_id,
-                "clientOperationId": str(uuid.uuid4()),
+                "clientOperationId": operation_id,
                 "clientOperationKey": operation_key,
                 "clientSyncVersion": self._last_server_sync_version,
                 "serverSyncVersion": 0,
@@ -286,14 +299,18 @@ class BlissClientAsync:
 
         try:
             timeout = BLISS2_ACK_TIMEOUT if device_data.get("tag") == "BLISS2" else BLISS1_ACK_TIMEOUT
-            await self._wait_for_command_ack(timeout)
-        except (BlissCommandError, ConnectionResetError, aiohttp.ClientError):
+            await self._wait_for_command_ack(timeout, operation_id)
+        except (BlissCommandError, ConnectionResetError, aiohttp.ClientError, asyncio.CancelledError):
             # A late ACK must not satisfy the next command on this socket.
             await self._reset_connection()
             raise
-        await self._drain_command_responses()
+        try:
+            await self._drain_command_responses()
+        except (ConnectionResetError, aiohttp.ClientError):
+            # The ACK arrived; a closed socket during cleanup does not reject it.
+            await self._reset_connection()
 
-    async def _wait_for_command_ack(self, timeout: float):
+    async def _wait_for_command_ack(self, timeout: float, operation_id: str | None = None):
         """Wait for a version acknowledgement within one overall deadline.
 
         This only acknowledges transport; the API wrapper separately reads
@@ -308,6 +325,11 @@ class BlissClientAsync:
                             continue
                         capture.on_answer(data)
                         for arg in data.get("arguments", []):
+                            # Some servers omit the operation ID. When present,
+                            # it must identify this write, not a late earlier ACK.
+                            echoed_id = arg.get("clientOperationId")
+                            if operation_id and echoed_id and echoed_id != operation_id:
+                                continue
                             if "serverSyncVersion" in arg:
                                 self._last_server_sync_version = arg["serverSyncVersion"]
                                 _LOGGER.debug(

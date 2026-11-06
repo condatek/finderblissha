@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 import time
@@ -14,6 +15,9 @@ COMMAND_ATTEMPTS = 2
 # The ACK means the frame was accepted, not that the new settings are queryable.
 COMMAND_VERIFY_DELAY = 1.5
 COMMAND_RETRY_DELAY = 3.0
+# Re-read BLISS2 without replaying a write that may already be on the device.
+BLISS2_VERIFY_READS = 10
+BLISS2_VERIFY_TIMEOUT = 45.0
 # How long a polled snapshot stays usable as the base for a command payload.
 SNAPSHOT_TTL = 15.0
 
@@ -114,7 +118,7 @@ class BlissDevice:
 
     def _load_settings(self) -> dict:
         try:
-            return json.loads(self.settings) if isinstance(self.settings, str) else dict(self.settings)
+            return json.loads(self.settings) if isinstance(self.settings, str) else copy.deepcopy(self.settings)
         except (TypeError, json.JSONDecodeError):
             return {}
 
@@ -300,8 +304,9 @@ class PyFinderBlissAPI:
         self._snapshot_ts = 0.0
         self._snapshot_dirty = True
 
-    async def _async_ensure_authenticated(self):
-        if hasattr(self._client, "is_logged_in") and self._client.is_logged_in:
+    async def _async_ensure_authenticated(self, *, force=False):
+        if not force and (getattr(self._client, "is_logged_in", False)
+                          or getattr(self._client, "_token", None)):
             return
 
         try:
@@ -334,6 +339,11 @@ class PyFinderBlissAPI:
             return False
 
     async def async_get_devices(self):
+        """Serialize polling with the complete read/write/confirmation transaction."""
+        async with self._command_lock:
+            return await self._async_get_devices()
+
+    async def _async_get_devices(self):
         await self._async_ensure_authenticated()
 
         for attempt in range(self._max_retries):
@@ -360,7 +370,7 @@ class PyFinderBlissAPI:
                         await self._client.reset_connection()
                     except Exception:
                         pass
-                    await self._async_ensure_authenticated()
+                    await self._async_ensure_authenticated(force=True)
                     await asyncio.sleep(self._retry_delay)
                     continue
 
@@ -386,10 +396,21 @@ class PyFinderBlissAPI:
         if not known:
             return devices, False
 
+        stale = False
+        for index, device in enumerate(devices):
+            previous = known.get(self._device_key(device))
+            if (previous is not None
+                    and isinstance(previous.sync_version, (int, float))
+                    and isinstance(device.sync_version, (int, float))
+                    and device.sync_version < previous.sync_version):
+                devices[index] = previous
+                stale = True
+                _LOGGER.debug("Ignoring older device snapshot for %s", self._device_key(device))
+
         seen = {self._device_key(d) for d in devices}
         missing = [device for key, device in known.items() if key not in seen]
         if not missing:
-            return devices, False
+            return devices, stale
 
         _LOGGER.warning(
             "Partial device payload: %s of %s devices returned, carrying over %s",
@@ -418,75 +439,84 @@ class PyFinderBlissAPI:
         cached devices, which cannot establish that a command is unnecessary.
         """
         if force_refresh or self._snapshot_dirty or (time.monotonic() - self._snapshot_ts) > SNAPSHOT_TTL:
-            devices = await self.async_get_devices()
-            if force_refresh and self._snapshot_dirty:
+            devices = await self._async_get_devices()
+            if self._snapshot_dirty:
                 raise BlissCommandError("Cannot confirm current device state from a partial cloud response")
             return devices
         return self._devices
 
+    async def _async_confirm_command(self, serial, verify_fn, reads):
+        """Poll cloud settings; missing devices never count as confirmation."""
+        for _ in range(reads):
+            await asyncio.sleep(COMMAND_VERIFY_DELAY)
+            try:
+                devices = await self._async_get_devices()
+            except Exception as err:
+                _LOGGER.debug("Command confirmation read failed: %s", err)
+                continue
+            confirmed = self._find_device_by_serial(serial, devices)
+            if not self._snapshot_dirty and confirmed is not None and verify_fn(confirmed):
+                return devices
+        return None
+
     async def _async_run_command(self, device_serial: str, apply_fn, verify_fn, description: str, skip_fn=None):
-        """Apply a command and confirm the server took it, retrying if it did not.
+        """Separate dispatch from confirmation; never replay ambiguous BLISS2 writes.
 
-        An ACK only proves the frame was accepted; whether the settings landed
-        is a separate question. A lost write is otherwise invisible - the next
-        poll just reports the old value, which downstream reads as somebody
-        having changed it by hand. Returns the snapshot that confirmed it, so
-        the caller can publish state it has actually verified.
-
-        Commands with skip_fn bypass the snapshot cache: only a new server
-        read can establish that an external change has not made a write
-        necessary. If skip_fn matches, nothing is sent.
+        A stale read or a missing ACK does not prove rejection. BLISS2 gets a
+        bounded read-only reconciliation window, including after transport loss.
+        Polls share this lock so they cannot publish intermediate snapshots.
         """
         async with self._command_lock:
-            last_error: Exception | None = None
-
-            for attempt in range(1, COMMAND_ATTEMPTS + 1):
-                await self._async_ensure_authenticated()
-                devices = await self._async_fresh_devices(force_refresh=skip_fn is not None)
+            for attempt in range(COMMAND_ATTEMPTS):
+                devices = await self._async_fresh_devices(force_refresh=True)
                 device = self._find_device_by_serial(device_serial, devices)
                 if device is None:
                     raise ValueError(f"Device with serial {device_serial} not found in tracked devices.")
                 if skip_fn is not None and skip_fn(device):
-                    _LOGGER.debug("%s already applied, not sent", description)
                     return devices
 
+                bliss2 = device.tag == "BLISS2"
+                self._snapshot_dirty = True
                 try:
-                    await apply_fn(device)
+                    # Setters must not mutate the snapshot already published to HA.
+                    await apply_fn(copy.copy(device))
                 except ValueError:
-                    # A bad argument will not become valid on a retry.
                     raise
                 except Exception as err:
-                    last_error = err
-                    _LOGGER.warning(
-                        "%s failed on attempt %s/%s: %s",
-                        description, attempt, COMMAND_ATTEMPTS, err,
-                    )
-                else:
-                    self._snapshot_dirty = True
-                    await asyncio.sleep(COMMAND_VERIFY_DELAY)
-                    devices = await self.async_get_devices()
-                    confirmed = self._find_device_by_serial(device_serial, devices)
-                    if confirmed is not None and verify_fn(confirmed):
-                        return devices
+                    _LOGGER.warning("%s dispatch could not be acknowledged: %s", description, err)
 
-                    last_error = BlissCommandError(
-                        f"{description}: the server did not apply the command"
-                    )
-                    _LOGGER.warning(
-                        "%s was not confirmed on attempt %s/%s",
-                        description, attempt, COMMAND_ATTEMPTS,
-                    )
+                confirmed = None
+                try:
+                    async with asyncio.timeout(BLISS2_VERIFY_TIMEOUT):
+                        confirmed = await self._async_confirm_command(
+                            device_serial, verify_fn, BLISS2_VERIFY_READS if bliss2 else 1,
+                        )
+                    if confirmed is not None:
+                        return confirmed
+                except TimeoutError:
+                    pass
+                finally:
+                    # Unconfirmed reads are not a safe base for subsequent writes.
+                    if confirmed is None:
+                        self._snapshot_dirty = True
 
-                if attempt < COMMAND_ATTEMPTS:
+                if bliss2:
+                    break
+                if attempt + 1 < COMMAND_ATTEMPTS:
                     await asyncio.sleep(COMMAND_RETRY_DELAY)
 
-            raise last_error
+            raise BlissCommandError(
+                f"{description}: cloud confirmation timed out; the command may already "
+                "have been applied by the thermostat"
+            )
 
     async def async_set_temperature(self, device_serial: str, temperature: float):
         return await self._async_run_command(
             device_serial,
             lambda device: device.set_setpoint(value=temperature),
-            lambda device: _set_point_matches(device.manual_set_point, temperature),
+            lambda device: commanded_mode(device) == "manual"
+            and _set_point_matches(device.manual_set_point, temperature)
+            and (device.tag == "BLISS1" or "manualTimer" not in device._load_settings()),
             f"Set point {temperature}",
         )
 
@@ -495,7 +525,8 @@ class PyFinderBlissAPI:
         return await self._async_run_command(
             device_serial,
             lambda device: device.set_mode(mode=mode),
-            lambda device: commanded_mode(device) == expected,
+            lambda device: commanded_mode(device) == expected
+            and (device.tag == "BLISS1" or "manualTimer" not in device._load_settings()),
             f"Mode {mode.upper()}",
         )
 

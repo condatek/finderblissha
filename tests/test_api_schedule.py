@@ -47,12 +47,12 @@ async def test_same_schedule_in_another_order_sends_nothing(make_api):
     assert cloud.sent == []
 
 
-async def test_a_write_the_server_drops_is_retried_then_raised(make_api):
+async def test_unconfirmed_write_is_not_replayed_and_reports_uncertainty(make_api):
     api, cloud = make_api(bliss2_device())
     cloud.apply_writes = False
-    with pytest.raises(BlissCommandError, match="did not apply"):
+    with pytest.raises(BlissCommandError, match="confirmation timed out"):
         await api.async_set_automatic_schedule(SERIAL, VACANT_17)
-    assert len(cloud.sent) == 2
+    assert len(cloud.sent) == 1
 
 
 async def test_resume_schedule_sends_auto_from_off(make_api):
@@ -148,9 +148,9 @@ async def test_resume_schedule_with_a_pending_timer_fails_if_the_write_is_droppe
     # primary.mode already reads AUTO, so only the timer shows the write was lost.
     api, cloud = make_api(bliss2_device(mode="AUTO", extra_settings={"manualTimer": {"value": 190}}))
     cloud.apply_writes = False
-    with pytest.raises(BlissCommandError, match="did not apply"):
+    with pytest.raises(BlissCommandError, match="confirmation timed out"):
         await api.async_resume_schedule(SERIAL)
-    assert len(cloud.sent) == 2
+    assert len(cloud.sent) == 1
 
 
 async def test_bliss1_override_in_progress_is_sent_auto(make_api):
