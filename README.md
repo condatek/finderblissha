@@ -141,6 +141,15 @@ To update credentials later, go to the integration entry, click the three-dot me
 
 ## Changelog
 
+### v0.5.11-testing2 (pre-release)
+
+* **BLISS2 command reconciliation:** send each command once, then perform up to ten confirmation reads, 1.5 seconds apart, with an overall 45-second verification limit. A missing ACK also triggers read-back rather than replaying a potentially applied write. Exhausting confirmation reports an uncertain outcome, not proof that the thermostat rejected the command.
+* **Consistent state:** polling and writes share a transaction lock; older device versions cannot overwrite newer snapshots. Mode, `operating_mode`, presets and manual target temperature use cloud settings while hardware measurements catch up. Cloud confirmation does not prove physical delivery.
+* **Temperature from OFF:** send MANUAL and the requested temperature together, avoiding an intermediate mode-only command.
+* **WebSocket handling:** bound sync and handshake waits, ignore mismatched operation IDs when supplied, and recover cleanly from closed connections.
+
+* **Validation:** all 148 automated tests pass, including delayed confirmation, lost acknowledgements, concurrent polling and temperature changes from OFF. Physical BLISS2 validation is still pending.
+
 ### v0.5.11-testing1 (pre-release)
 
 *   **Fresh cloud state before skipping commands:** schedule writes and switching to AUTO now bypass the snapshot cache before deciding that no write is needed. Changes made through the Finder app are respected, and unavailable or partial cloud responses fail instead of reporting success from cached state.
