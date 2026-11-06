@@ -101,3 +101,69 @@ async def test_confirmation_has_overall_deadline(make_api, monkeypatch):
         await asyncio.wait_for(api.async_set_mode(SERIAL, "OFF"), 0.5)
     assert not api._command_lock.locked()
     assert len(cloud.sent) == 1
+
+
+@pytest.mark.parametrize("unrelated_state", ["missing", "older"])
+@pytest.mark.parametrize("phase", ["before_send", "confirmation"])
+async def test_fresh_target_is_not_blocked_by_unrelated_device(
+    make_api, monkeypatch, unrelated_state, phase,
+):
+    api, cloud = make_api(bliss2_device(mode="OFF"))
+    other = copy.deepcopy(cloud.device)
+    other["serialNumber"] = "TEST0002"
+    other["handle"] = "dev-handle-2"
+    reads = 0
+
+    async def read():
+        nonlocal reads
+        reads += 1
+        devices = [copy.deepcopy(cloud.device)]
+        partial = reads > 1 and (phase == "before_send" or bool(cloud.sent))
+        if not partial:
+            devices.append(copy.deepcopy(other))
+        elif unrelated_state == "older":
+            devices.append({**copy.deepcopy(other), "syncVersion": 6})
+        return parse_device_data({"devices": devices})
+
+    monkeypatch.setattr(cloud, "get_devices", read)
+    await api.async_get_devices()
+    devices = await api.async_set_temperature(SERIAL, 21)
+    assert len(cloud.sent) == 1
+    assert len(devices) == 2
+    assert api._find_device_by_serial(SERIAL, devices).manual_set_point == 21
+    assert api._find_device_by_serial("TEST0002", devices).sync_version == 7
+    assert api._fresh_device_keys == {SERIAL}
+
+
+@pytest.mark.parametrize("target_state", ["missing", "older"])
+async def test_cached_target_cannot_be_used_for_dispatch(make_api, monkeypatch, target_state):
+    api, cloud = make_api(bliss2_device(mode="OFF"))
+    await api.async_get_devices()
+
+    async def read():
+        devices = [] if target_state == "missing" else [{**cloud.device, "syncVersion": 6}]
+        return parse_device_data({"devices": devices})
+
+    monkeypatch.setattr(cloud, "get_devices", read)
+    with pytest.raises(BlissCommandError, match="partial cloud response or stale target"):
+        await api.async_set_temperature(SERIAL, 21)
+    assert not cloud.sent
+
+
+@pytest.mark.parametrize("target_state", ["missing", "older"])
+async def test_matching_cached_target_cannot_confirm_command(make_api, monkeypatch, target_state):
+    # Even if the cached state already matches, it must not confirm a new write.
+    api, cloud = make_api(bliss2_device(mode="OFF"))
+    original_read = cloud.get_devices
+
+    async def read():
+        if not cloud.sent:
+            return await original_read()
+        devices = [] if target_state == "missing" else [{**cloud.device, "syncVersion": 6}]
+        return parse_device_data({"devices": devices})
+
+    monkeypatch.setattr(cloud, "get_devices", read)
+    with pytest.raises(BlissCommandError, match="confirmation timed out"):
+        await api.async_set_mode(SERIAL, "OFF")
+    assert len(cloud.sent) == 1
+    assert SERIAL not in api._fresh_device_keys
