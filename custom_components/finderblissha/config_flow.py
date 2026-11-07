@@ -11,8 +11,7 @@ from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import (DOMAIN, CONF_USERNAME, CONF_PASSWORD,
-                    CONF_BLISS1_OVERRIDE_HOURS, DEFAULT_BLISS1_OVERRIDE_HOURS)
+from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD
 from .pyfinderbliss.pyfinderbliss_wrapper import PyFinderBlissAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,11 +44,6 @@ class FinderBlissConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Finder Bliss."""
 
     VERSION = 1
-
-    @staticmethod
-    def async_get_options_flow(config_entry):
-        """Configure BLISS1 manual overrides."""
-        return FinderBlissOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -152,25 +146,6 @@ class FinderBlissConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
-        )
-
-
-class FinderBlissOptionsFlow(config_entries.OptionsFlow):
-    """Configure the override behavior for all BLISS1 devices in this account."""
-
-    async def async_step_init(self, user_input=None):
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_BLISS1_OVERRIDE_HOURS,
-                    default=self.config_entry.options.get(
-                        CONF_BLISS1_OVERRIDE_HOURS, DEFAULT_BLISS1_OVERRIDE_HOURS
-                    ),
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=168)),
-            }),
         )
 
 

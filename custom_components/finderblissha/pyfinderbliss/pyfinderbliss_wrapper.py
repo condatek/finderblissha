@@ -309,6 +309,7 @@ class BlissDevice:
 class PyFinderBlissAPI:
     def __init__(self, username: str, password: str, max_retries=3, retry_delay=5, bliss1_override_hours=1):
         self._bliss1_override_hours = bliss1_override_hours
+        self._bliss1_device_hours: dict[str, int] = {}
         self._username = username
         self._password = password
         self._client = BlissClientAsync(username, password)
@@ -322,6 +323,19 @@ class PyFinderBlissAPI:
         self._snapshot_ts = 0.0
         self._snapshot_dirty = True
         self._fresh_device_keys: set[str] = set()
+
+    def bliss1_override_hours(self, serial: str) -> int:
+        """Return the duration configured for this device."""
+        return self._bliss1_device_hours.get(serial, self._bliss1_override_hours)
+
+    def set_bliss1_override_hours(self, serial: str, hours: int) -> None:
+        """Apply a per-device preference to future commands and cached snapshots."""
+        if not isinstance(hours, int) or not 0 <= hours <= 168:
+            raise ValueError("Override duration must be a whole number from 0 to 168")
+        self._bliss1_device_hours[serial] = hours
+        for device in self._devices:
+            if self._device_key(device) == serial:
+                device.bliss1_override_hours = hours
 
     async def _async_ensure_authenticated(self, *, force=False):
         if not force and (getattr(self._client, "is_logged_in", False)
@@ -369,7 +383,9 @@ class PyFinderBlissAPI:
         for attempt in range(self._max_retries):
             try:
                 devices_data = await self._client.get_devices()
-                devices = [BlissDevice(d, self._bliss1_override_hours) for d in devices_data]
+                devices = [BlissDevice(d, self.bliss1_override_hours(
+                    d.get("serial_number") or d.get("name")
+                )) for d in devices_data]
 
                 for dev in devices:
                     dev._client = self._client
@@ -538,7 +554,7 @@ class PyFinderBlissAPI:
             lambda device: device.set_setpoint(value=temperature),
             lambda device: commanded_mode(device) == "manual"
             and _set_point_matches(device.manual_set_point, temperature)
-            and _bliss1_manual_kind_matches(device, self._bliss1_override_hours)
+            and _bliss1_manual_kind_matches(device, device.bliss1_override_hours)
             and (device.tag == "BLISS1" or "manualTimer" not in device._load_settings()),
             f"Set point {temperature}",
         )
@@ -549,7 +565,7 @@ class PyFinderBlissAPI:
             device_serial,
             lambda device: device.set_mode(mode=mode),
             lambda device: commanded_mode(device) == expected
-            and (mode.upper() != "MANUAL" or _bliss1_manual_kind_matches(device, self._bliss1_override_hours))
+            and (mode.upper() != "MANUAL" or _bliss1_manual_kind_matches(device, device.bliss1_override_hours))
             and (device.tag == "BLISS1" or "manualTimer" not in device._load_settings()),
             f"Mode {mode.upper()}",
         )

@@ -138,7 +138,7 @@ To update credentials later, go to the integration entry, click the three-dot me
 ## Notes  
   
 - The integration communicates via the Finder Bliss cloud API (OAuth2 + SignalR WebSocket). It does **not** use local/Bluetooth communication.  
-- **BLISS1 manual duration:** under Settings → Devices & services → Finder Bliss → Configure, set the override duration in hours (1–168), or 0 for indefinite manual mode. The default is one hour. This applies to all BLISS1 devices on the account and to subsequent temperature or manual-mode commands. Finite durations beyond one hour depend on cloud/device support and need physical-device validation.
+- **BLISS1 manual duration:** use the **Manual override duration** control on each BLISS1 device page, in hours (1–168), or 0 for indefinite manual mode. It applies to subsequent temperature or manual-mode commands; changing the control does not change an active override. The control shows the saved preference, while the **Active manual override** sensor reports the active cloud override. Existing account settings become the initial per-device default. Finite durations beyond one hour need physical-device validation.
 - **Off mode** on BLISS1 devices activates frost protection (anti-freeze), not a full power-off.  
 - Thermal differential (hysteresis) is exposed as a read-only diagnostic sensor. It can be configured from the Finder Bliss app.  
 - The API is unofficial and may break if Finder changes their cloud service.  
@@ -147,6 +147,10 @@ To update credentials later, go to the integration entry, click the three-dot me
 ---
 
 ## Changelog
+
+### v0.5.14
+
+* **BLISS1 per-device duration:** configure and restore each thermostat’s override duration independently, and inspect its active cloud override in the control’s attributes.
 
 ### v0.5.13
 
