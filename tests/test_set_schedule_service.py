@@ -65,13 +65,13 @@ async def test_confirmed_off_survives_stale_auto_echo_and_refresh(hass, cloud):
     state = hass.states.get(ENTITY)
     assert state.state == "off"
     assert state.attributes["temperature"] == 5.0
-    assert state.attributes["operating_mode"] == "auto"
+    assert state.attributes["operating_mode"] == "off"
 
 
 async def test_failed_off_command_restores_confirmed_mode(hass, cloud):
     await call(hass, blocks=[{"from": "00:00", "to": "24:00", "temp": 17}])
     cloud.apply_writes = False
-    with pytest.raises(HomeAssistantError, match="did not apply"):
+    with pytest.raises(HomeAssistantError, match="confirmation timed out"):
         await hass.services.async_call("climate", "set_hvac_mode", {
             "entity_id": ENTITY, "hvac_mode": "off",
         }, blocking=True)
@@ -90,8 +90,7 @@ async def test_all_day_17_writes_schedule_then_auto(hass, cloud):
     assert second["primary"]["mode"] == "AUTO"
     assert cloud.settings()["automaticSchedule"]["days"][0]["setPoints"] == [
         {"hour": 0, "minute": 0, "setPoint": {"unit": "C", "value": 170}}]
-    # operating_mode follows the thermostat's own echo (measures), which only
-    # moves when it next checks in; the commanded side is what was verified.
+    # Mode and target follow confirmed cloud settings while hardware catches up.
 
 
 async def test_repeating_the_call_sends_nothing(hass, cloud):
@@ -170,7 +169,7 @@ async def test_bad_blocks_are_a_validation_error_and_send_nothing(hass, cloud):
 
 async def test_a_dropped_write_fails_the_call(hass, cloud):
     cloud.apply_writes = False
-    with pytest.raises(HomeAssistantError, match="did not apply"):
+    with pytest.raises(HomeAssistantError, match="confirmation timed out"):
         await call(hass, blocks=[{"from": "00:00", "to": "24:00", "temp": 17}])
     # The mode was never sent: the schedule write failed first.
     assert all(json_mode(p) == "OFF" for p in cloud.sent)
@@ -179,7 +178,7 @@ async def test_a_dropped_write_fails_the_call(hass, cloud):
 async def test_schedule_written_but_auto_dropped_fails_and_a_retry_completes(hass, cloud):
     blocks = [{"from": "00:00", "to": "24:00", "temp": 17}]
     cloud.drop_if = lambda settings: settings["primary"]["mode"] == "AUTO"
-    with pytest.raises(HomeAssistantError, match="did not apply"):
+    with pytest.raises(HomeAssistantError, match="confirmation timed out"):
         await call(hass, blocks=blocks)
     # The schedule landed; the thermostat keeps its previous mode.
     assert cloud.settings()["automaticSchedule"]["days"][0]["setPoints"][0]["setPoint"]["value"] == 170
@@ -214,3 +213,19 @@ async def test_bliss2_implausible_battery_reading_is_unknown(hass, cloud):
     await hass.async_block_till_done()
     assert hass.states.get("sensor.living_room_battery").state == "unknown"
     assert float(hass.states.get("sensor.living_room_battery_voltage").state) == pytest.approx(10.0)
+
+
+async def test_temperature_from_off_is_one_atomic_write(hass, cloud):
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": ENTITY, "temperature": 21}, blocking=True,
+    )
+    assert len(cloud.sent) == 1
+    assert cloud.settings()["primary"]["mode"] == "MANUAL"
+    state = hass.states.get(ENTITY)
+    assert state.state == "heat"
+    assert state.attributes["temperature"] == 21
+    assert state.attributes["operating_mode"] == "manual"
+    # The hardware echo remains OFF; a later poll must preserve the cloud setting.
+    entry_data = next(iter(hass.data[DOMAIN].values()))
+    await entry_data["coordinator"].async_refresh()
+    assert hass.states.get(ENTITY).attributes["temperature"] == 21

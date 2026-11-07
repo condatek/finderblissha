@@ -199,6 +199,12 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
         dev = self._find_device()
         if dev is None:
             return default
+        if dev.tag == "BLISS2":
+            mode = commanded_mode(dev)
+            if name == "mode" and mode is not None:
+                return mode
+            if name == "set_point" and mode == "manual":
+                return dev.manual_set_point
         value = getattr(dev, name, default)
         return default if value is None else value
 
@@ -258,11 +264,6 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
     @property
     def hvac_mode(self) -> HVACMode:
         mode = self._device_value("mode")
-        dev = self._find_device()
-        # Settings confirm the requested mode before the BLISS2 hardware echo
-        # catches up. Keep pending commands visible until confirmation/failure.
-        if "mode" not in self._optimistic and dev is not None and dev.tag == "BLISS2":
-            mode = commanded_mode(dev) or mode
         if mode is None or str(mode).lower() == "off":
             return HVACMode.OFF
         # Both "auto" and "manual" resolve to HEAT/COOL based on season
@@ -411,12 +412,7 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
         if target_temp is None:
             return
 
-        # Setting temperature from OFF turns the thermostat on in manual
-        if self.hvac_mode == HVACMode.OFF:
-            season = self._get_season()
-            target_hvac = HVACMode.COOL if season == "SUMMER" else HVACMode.HEAT
-            await self.async_set_hvac_mode(target_hvac)
-
+        # The setpoint payload already selects MANUAL, including from OFF.
         await self._async_execute_api_command(
             self._api.async_set_temperature, self._device_serial, target_temp,
             optimistic={"set_point": target_temp, "mode": "manual"},

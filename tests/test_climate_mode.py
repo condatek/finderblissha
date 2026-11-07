@@ -35,7 +35,10 @@ def test_confirmed_mode_takes_precedence_with_echo_fallback(setting, echo, expec
     raw["measures"] = json.dumps(measures)
     entity = climate_for(raw)
     assert entity.hvac_mode == expected
-    assert entity.extra_state_attributes["operating_mode"] == ("auto" if echo == 1 else "off")
+    assert entity.extra_state_attributes["operating_mode"] == (
+        ("off" if setting == "FROST" else setting.lower())
+        if setting is not None else ("auto" if echo == 1 else "off")
+    )
 
 
 def test_pending_mode_takes_precedence_until_cleared_or_expired():
@@ -56,3 +59,23 @@ def test_confirmed_summer_mode_still_resolves_to_cooling():
 @pytest.mark.parametrize("override", [False, True])
 def test_bliss1_schedule_and_manual_override_still_show_heat(override):
     assert climate_for(bliss1_device(override=override)).hvac_mode == HVACMode.HEAT
+
+
+def test_manual_target_uses_settings_while_hardware_still_reports_off():
+    entity = climate_for(bliss2_device(mode="OFF", extra_settings={
+        "primary": {"mode": "MANUAL", "manualSetPoint": {"value": 215}},
+    }))
+    assert entity.hvac_mode == HVACMode.HEAT
+    assert entity.target_temperature == 21.5
+    assert entity.extra_state_attributes["operating_mode"] == "manual"
+
+
+def test_auto_target_uses_schedule_while_hardware_still_reports_off():
+    raw = bliss2_device(mode="AUTO", days=[
+        {"day": day, "setPoints": [{"hour": 0, "minute": 0, "setPoint": {"value": 175}}]}
+        for day in range(1, 8)
+    ])
+    measures = json.loads(raw["measures"])
+    measures["mode"] = 0
+    raw["measures"] = json.dumps(measures)
+    assert climate_for(raw).target_temperature == 17.5

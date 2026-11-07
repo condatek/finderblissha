@@ -120,3 +120,48 @@ async def test_bliss1_keeps_a_shorter_ack_budget(make_client, monkeypatch):
     await api.send_operation({"tag": "BLISS2"})
     assert not socket.closed
     assert api._last_server_sync_version == 8
+
+
+async def test_ack_for_another_operation_is_ignored(make_client, monkeypatch):
+    monkeypatch.setattr(client, "BLISS2_ACK_TIMEOUT", 0.03)
+    wrong = {**ACK, "arguments": [{"serverSyncVersion": 99, "clientOperationId": "old-command"}]}
+    api, socket = make_client([(0, wrong)])
+    with pytest.raises(client.BlissCommandError):
+        await api.send_operation({"tag": "BLISS2"})
+    assert socket.closed
+    assert api._last_server_sync_version == 0
+
+
+async def test_sync_pings_do_not_restart_timeout(make_client):
+    api, socket = make_client(keep_pinging=True)
+    with pytest.raises(Exception, match="Timeout waiting for serverPayload"):
+        await asyncio.wait_for(api.get_devices(ws_timeout=0.03, reconnect_attempts=0), 0.5)
+    assert socket.closed
+
+
+@pytest.mark.parametrize("kind", [aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR])
+async def test_closed_and_error_frames_fail_promptly(make_client, kind):
+    api, _ = make_client()
+    with pytest.raises(ConnectionResetError):
+        await api._handle_message(aiohttp.WSMessage(kind, None, ""))
+
+
+async def test_disconnect_during_drain_preserves_ack(make_client):
+    api, socket = make_client([(0, ACK), (0, ConnectionResetError("closed after ACK"))])
+    await api.send_operation({"tag": "BLISS2"})
+    assert socket.closed
+    assert api._ws is None
+
+
+async def test_late_write_payload_does_not_satisfy_poll(make_client):
+    def response(operation_id, version):
+        return {"type": 1, "target": "SyncResponse", "arguments": [{
+            "clientOperationId": operation_id, "serverSyncVersion": version,
+            "serverPayload": {"devices": []},
+        }]}
+    api, _ = make_client([
+        (0, response("old-write", 7)),
+        (0, response("00000000-0000-0000-0000-000000000000", 8)),
+    ])
+    assert await api.get_devices() == []
+    assert api._last_server_sync_version == 8
