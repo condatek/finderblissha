@@ -11,7 +11,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.config_entries import ConfigEntry
 
-from .const import DOMAIN, PLATFORMS, DEFAULT_SCAN_INTERVAL
+from .const import (DOMAIN, PLATFORMS, DEFAULT_SCAN_INTERVAL,
+                    CONF_BLISS1_OVERRIDE_HOURS, DEFAULT_BLISS1_OVERRIDE_HOURS)
 from .pyfinderbliss.pyfinderbliss_wrapper import PyFinderBlissAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -22,7 +23,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Finder Bliss from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    api = PyFinderBlissAPI(entry.data["username"], entry.data["password"])
+    api = PyFinderBlissAPI(
+        entry.data["username"], entry.data["password"],
+        bliss1_override_hours=entry.options.get(
+            CONF_BLISS1_OVERRIDE_HOURS, DEFAULT_BLISS1_OVERRIDE_HOURS
+        ),
+    )
     try:
         await api.async_setup()
     except Exception as err:
@@ -55,8 +61,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
 
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply new options to subsequent commands."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
