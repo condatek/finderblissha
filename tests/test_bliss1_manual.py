@@ -49,3 +49,57 @@ def test_parser_reads_app_indefinite_manual():
     parsed = parse_device_data({"devices": [raw]})[0]
     assert parsed["mode"] == "manual"
     assert parsed["set_point"] == parsed["manual_set_point"] == 18.9
+
+
+async def test_device_duration_preference_is_independent_and_updates_cached_device(make_api):
+    api, cloud = make_api(bliss1_device())
+    devices = await api.async_get_devices()
+    api.set_bliss1_override_hours(SERIAL, 0)
+    api.set_bliss1_override_hours("OTHER", 3)
+    assert devices[0].bliss1_override_hours == 0
+    assert api.bliss1_override_hours("OTHER") == 3
+    assert api.bliss1_override_hours("UNCONFIGURED") == 1
+    await api.async_set_temperature(SERIAL, 18.3)
+    assert cloud.settings()["mode"] == "MANUAL"
+
+
+async def test_duration_control_restores_zero_and_updates_only_one_device(make_api, monkeypatch):
+    from types import SimpleNamespace
+    from custom_components.finderblissha.number import Bliss1OverrideDuration
+    api, _ = make_api(bliss1_device())
+    devices = await api.async_get_devices()
+    coordinator = SimpleNamespace(data=devices)
+    entity = Bliss1OverrideDuration(coordinator, api, devices[0])
+    async def restore():
+        return SimpleNamespace(native_value=0)
+    async def added(_self):
+        pass
+    from homeassistant.helpers.update_coordinator import CoordinatorEntity
+    monkeypatch.setattr(CoordinatorEntity, "async_added_to_hass", added)
+    monkeypatch.setattr(entity, "async_get_last_number_data", restore)
+    monkeypatch.setattr(entity, "async_write_ha_state", lambda: None)
+    await entity.async_added_to_hass()
+    assert entity.native_value == 0
+    assert api.bliss1_override_hours(SERIAL) == 0
+    await entity.async_set_native_value(4)
+    assert api.bliss1_override_hours(SERIAL) == 4
+    assert api.bliss1_override_hours("OTHER") == 1
+    await entity.async_set_native_value(0)
+    assert api.bliss1_override_hours(SERIAL) == 0
+
+
+def test_active_override_is_cloud_state_not_preference():
+    from custom_components.finderblissha.number import active_override
+    from custom_components.finderblissha.pyfinderbliss.pyfinderbliss_wrapper import BlissDevice
+    raw = bliss1_device()
+    settings = json.loads(raw["settings"])
+    settings.update(mode="MANUAL", manualSetPoint=189)
+    raw["settings"] = json.dumps(settings)
+    device = BlissDevice(parse_device_data({"devices": [raw]})[0], 3)
+    assert active_override(device) == ("indefinite", 0)
+    settings.update(mode="AUTO", manualSchedule={"isOn": True, "start": "2026-01-01T10:00:00", "stop": "2026-01-01T12:00:00"})
+    device.settings = json.dumps(settings)
+    assert active_override(device) == ("timed", 2)
+    settings["manualSchedule"]["isOn"] = False
+    device.settings = json.dumps(settings)
+    assert active_override(device) == ("none", None)

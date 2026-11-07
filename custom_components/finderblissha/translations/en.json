@@ -70,6 +70,9 @@
       },
       "schedule": {
         "name": "Schedule"
+      },
+      "active_override": {
+        "name": "Active manual override"
       }
     },
     "climate": {
@@ -80,6 +83,11 @@
     "select": {
       "sync_profile": {
         "name": "Sync profile"
+      }
+    },
+    "number": {
+      "override_duration": {
+        "name": "Manual override duration"
       }
     }
   },
@@ -95,17 +103,6 @@
         "days": {
           "name": "Blocks per day",
           "description": "A list of blocks for each of the seven days, keyed mon..sun (or 1..7). Use either this or Blocks, not both."
-        }
-      }
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "BLISS1 manual override",
-        "description": "Duration for BLISS1 temperature changes and manual mode, in hours. Set to 0 for indefinite manual mode. Applies to all BLISS1 thermostats in this account.",
-        "data": {
-          "bliss1_override_hours": "Override duration (hours; 0 = indefinite)"
         }
       }
     }
