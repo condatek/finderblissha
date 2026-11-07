@@ -28,6 +28,8 @@ def determine_bliss1_mode(settings: dict) -> str:
     is_on = settings.get("manualSchedule", {}).get("isOn", False)
     mode = settings.get("mode", "OFF").upper()
 
+    if mode == "MANUAL":
+        return "manual"
     if mode == "OFF":
         return "off"
     if mode == "AUTO" and is_on:
@@ -35,6 +37,11 @@ def determine_bliss1_mode(settings: dict) -> str:
     if mode == "AUTO":
         return "auto"
     return "unknown"
+
+
+def mode_setting_is_manual(settings: dict) -> bool:
+    """BLISS1 permanent manual mode uses the root-level set point."""
+    return str(settings.get("mode", "")).upper() == "MANUAL"
 
 
 def determine_bliss2_mode(measures: dict) -> str:
@@ -138,7 +145,8 @@ def parse_device(device: dict) -> dict:
     if tag == "BLISS1":
         if mode == "manual":
             set_point = parse_set_point(
-                settings_parsed.get("manualSchedule", {}).get("setPoint")
+                (settings_parsed.get("manualSetPoint") if mode_setting_is_manual(settings_parsed)
+                 else settings_parsed.get("manualSchedule", {}).get("setPoint"))
             )
         else:
             set_point = parse_set_point(measures_parsed.get("loggerSetPoint"))
@@ -174,7 +182,10 @@ def parse_device(device: dict) -> dict:
         manual_set_point_value = parse_set_point(primary_settings.get("manualSetPoint"))
     else:  # BLISS1
         mode_setting = settings_parsed.get("mode", "N/A")
-        manual_set_point_value = parse_set_point(settings_parsed.get("manualSchedule", {}).get("setPoint"))
+        manual_set_point_value = parse_set_point(
+            settings_parsed.get("manualSetPoint") if mode_setting_is_manual(settings_parsed)
+            else settings_parsed.get("manualSchedule", {}).get("setPoint")
+        )
 
     # 3. RETURN the dictionary, prioritizing RAW strings for setter compatibility
     return {

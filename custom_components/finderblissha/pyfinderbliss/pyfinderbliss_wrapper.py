@@ -52,8 +52,25 @@ def _set_point_matches(reported, expected) -> bool:
         return False
 
 
+def _bliss1_manual_kind_matches(device, hours: int) -> bool:
+    """Confirm the cloud stored the selected manual mode."""
+    if device.tag != "BLISS1":
+        return True
+    settings = device._load_settings()
+    if hours == 0:
+        return settings.get("mode") == "MANUAL" and not settings.get("manualSchedule", {}).get("isOn")
+    schedule = settings.get("manualSchedule", {})
+    try:
+        from datetime import datetime, timedelta
+        duration = datetime.fromisoformat(schedule["stop"]) - datetime.fromisoformat(schedule["start"])
+        return settings.get("mode") == "AUTO" and schedule.get("isOn") is True and duration == timedelta(hours=hours)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 class BlissDevice:
-    def __init__(self, device_data):
+    def __init__(self, device_data, bliss1_override_hours=1):
+        self.bliss1_override_hours = bliss1_override_hours
         self.handle = device_data.get("handle")
         self.name = device_data.get("name")
         self.temperature = device_data.get("temperature")
@@ -133,15 +150,8 @@ class BlissDevice:
                 settings_dict["mode"] = "AUTO"
                 settings_dict.setdefault("manualSchedule", {})["isOn"] = False
             elif mode == "MANUAL":
-                # BLISS1 manual = mode stays "AUTO", manualSchedule acts as
-                # a timed override (matching the iOS Finder Bliss app behavior).
-                settings_dict["mode"] = "AUTO"
-                ms = settings_dict.setdefault("manualSchedule", {})
-                ms["isOn"] = True
-                if ms.get("setPoint") is None:
-                    current_sp = self.set_point if isinstance(self.set_point, (int, float)) else 18.0
-                    ms["setPoint"] = int(current_sp * 10)
-                self._set_manual_timer(ms)
+                current_sp = self.set_point if isinstance(self.set_point, (int, float)) else 18.0
+                self._set_bliss1_manual(settings_dict, int(current_sp * 10))
             elif mode in ("OFF", "FROST"):
                 settings_dict["mode"] = "OFF"
                 settings_dict.setdefault("manualSchedule", {})["isOn"] = False
@@ -172,6 +182,18 @@ class BlissDevice:
         self.settings = modified
         self.mode = mode.lower() if mode in ("AUTO", "MANUAL") else "off"
 
+    def _set_bliss1_manual(self, settings: dict, setpoint: int) -> None:
+        """Use the app's permanent manual mode or a timed schedule override."""
+        ms = settings.setdefault("manualSchedule", {})
+        if self.bliss1_override_hours == 0:
+            settings["mode"] = "MANUAL"
+            settings["manualSetPoint"] = setpoint
+            ms.update(isOn=False, start=None, stop=None, setPoint=None)
+        else:
+            settings["mode"] = "AUTO"
+            ms.update(isOn=True, setPoint=setpoint)
+            self._set_manual_timer(ms, self.bliss1_override_hours)
+
     def _set_manual_timer(self, ms: dict, duration_hours: int = 1) -> None:
         """Set manualSchedule start/stop timestamps in the device's local timezone.
 
@@ -193,12 +215,7 @@ class BlissDevice:
         target_value_int = int(value * 10)
 
         if self.tag == "BLISS1":
-            # BLISS1: mode stays "AUTO", manualSchedule is a timed override
-            settings_dict["mode"] = "AUTO"
-            ms = settings_dict.setdefault("manualSchedule", {})
-            ms["isOn"] = True
-            ms["setPoint"] = target_value_int
-            self._set_manual_timer(ms)
+            self._set_bliss1_manual(settings_dict, target_value_int)
         else:
             # BLISS2 / BLISS-HA
             settings_dict.setdefault("primary", {})["mode"] = "MANUAL"
@@ -286,7 +303,8 @@ class BlissDevice:
 
 
 class PyFinderBlissAPI:
-    def __init__(self, username: str, password: str, max_retries=3, retry_delay=5):
+    def __init__(self, username: str, password: str, max_retries=3, retry_delay=5, bliss1_override_hours=1):
+        self._bliss1_override_hours = bliss1_override_hours
         self._username = username
         self._password = password
         self._client = BlissClientAsync(username, password)
@@ -339,7 +357,7 @@ class PyFinderBlissAPI:
         for attempt in range(self._max_retries):
             try:
                 devices_data = await self._client.get_devices()
-                devices = [BlissDevice(d) for d in devices_data]
+                devices = [BlissDevice(d, self._bliss1_override_hours) for d in devices_data]
 
                 for dev in devices:
                     dev._client = self._client
@@ -486,7 +504,8 @@ class PyFinderBlissAPI:
         return await self._async_run_command(
             device_serial,
             lambda device: device.set_setpoint(value=temperature),
-            lambda device: _set_point_matches(device.manual_set_point, temperature),
+            lambda device: _set_point_matches(device.manual_set_point, temperature)
+            and _bliss1_manual_kind_matches(device, self._bliss1_override_hours),
             f"Set point {temperature}",
         )
 
@@ -495,7 +514,8 @@ class PyFinderBlissAPI:
         return await self._async_run_command(
             device_serial,
             lambda device: device.set_mode(mode=mode),
-            lambda device: commanded_mode(device) == expected,
+            lambda device: commanded_mode(device) == expected
+            and (mode.upper() != "MANUAL" or _bliss1_manual_kind_matches(device, self._bliss1_override_hours)),
             f"Mode {mode.upper()}",
         )
 
