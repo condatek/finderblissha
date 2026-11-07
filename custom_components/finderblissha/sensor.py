@@ -26,6 +26,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
+from .number import active_override
 from .pyfinderbliss.device_parser import normalize_schedule_days, parse_set_point
 from .pyfinderbliss.pyfinderbliss_wrapper import BlissDevice
 
@@ -58,6 +59,8 @@ def build_entities_from_devices(coordinator: DataUpdateCoordinator):
             continue
         _LOGGER.debug("Processing device: %s", device.name)
 
+        if device.tag == "BLISS1":
+            entities.append(FinderBlissActiveOverrideSensor(coordinator, device))
         if device.temperature not in (None, "N/A"):
             entities.append(FinderBlissTemperatureSensor(coordinator, device))
         if device.humidity not in (None, "N/A"):
@@ -127,6 +130,24 @@ class FinderBlissBaseSensor(CoordinatorEntity, SensorEntity):
             manufacturer="Finder",
             model=getattr(dev, "model", None) if dev else None,
         )
+
+
+class FinderBlissActiveOverrideSensor(FinderBlissBaseSensor):
+    """The override currently reported by the cloud."""
+
+    _attr_translation_key = "active_override"
+
+    def __init__(self, coordinator, device):
+        super().__init__(coordinator, device, "active_override", "active_override")
+
+    @property
+    def native_value(self):
+        kind, duration = active_override(self._find_device())
+        if kind == "unknown":
+            return None
+        if kind == "timed" and duration is not None:
+            return f"{duration:g} h"
+        return kind
 
 
 class FinderBlissTemperatureSensor(FinderBlissBaseSensor):
