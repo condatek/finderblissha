@@ -4,6 +4,9 @@
   "after_dependencies": [
     "network"
   ],
+  "categories": [
+    "climate.thermostats_heating"
+  ],
   "codeowners": [
     "@condatek"
   ],

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+* **Home Assistant Marketplace** installation instructions and thermostat category metadata for the shared Marketplace and HACS catalog.
 * **BLISS2 availability:** mark a thermostat unavailable when Finder reports a connection error or no check-in is observed for 25 minutes. A Home Assistant restart starts a new 25-minute observation window.
 * **BLISS2 manual mode:** interpret device-reported mode 2 as manual. Thanks to [@Mangillone](https://github.com/Mangillone) for the patch and hardware observations in [#15](https://github.com/condatek/finderblissha/issues/15).
 

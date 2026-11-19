@@ -101,22 +101,23 @@ Categorized as a **Config** entity.
   
 ---  
   
-## Installation (via HACS - Recommended)  
-  
-This integration can be installed easily using the Home Assistant Community Store (HACS).  
-  
-1. Open **HACS** in your Home Assistant UI.  
-2. Go to **Integrations** section.  
-3. Click the **three dots** in the top right corner and select **Custom repositories**.  
-4. Enter the URL of this repository: `https://github.com/condatek/finderblissha`  
-5. Select the **Category** as `Integration`.  
-6. Click **ADD**.  
-7. HACS will list the new repository. Search for **"Finder Bliss"** and click **Download**.  
-8. **Restart Home Assistant** to ensure the new component is loaded.  
-  
-## Configuration  
-  
-After restarting Home Assistant:  
+## Installation
+
+### Home Assistant 2026.11 or later
+
+[![Open Finder Bliss in your Home Assistant Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=condatek&repository=finderblissha&category=integration)
+
+You can also open **Settings > Marketplace**, select **Add from link**, and enter `condatek/finderblissha`. Connect GitHub if prompted and choose **Integration** if asked for the type. Open the repository entry and select **Install**.
+
+Home Assistant automatically migrates existing HACS installations to Marketplace when you upgrade. [Home Assistant migration guide](https://www.home-assistant.io/integrations/marketplace/#coming-from-hacs)
+
+### Earlier Home Assistant versions
+
+In HACS, open **Custom repositories** from the three-dot menu. Add `https://github.com/condatek/finderblissha` as an **Integration**, download it, and restart Home Assistant.
+
+## Configuration
+
+After installation and any requested restart:
   
 1. Go to **Settings > Devices & Services > Integrations**.  
 2. Click **ADD INTEGRATION**.  
