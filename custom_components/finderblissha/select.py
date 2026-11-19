@@ -69,6 +69,13 @@ class FinderBlissUpdateProfileSelect(CoordinatorEntity, SelectEntity):
         return None
 
     @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        device = self._find_device()
+        return device is not None and device.online
+
+    @property
     def current_option(self) -> str | None:
         dev = self._find_device()
         if not dev:

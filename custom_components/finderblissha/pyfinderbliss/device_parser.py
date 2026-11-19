@@ -52,11 +52,12 @@ def determine_bliss2_mode(measures: dict) -> str:
     back onto the device, so a BLISS2 reporting "OFF" here never matched and
     flipped case on every command.
     """
+    # Firmware 9 reports 2 in manual mode; keep the existing mapping for 3.
     mode = measures.get("mode", 0)
     return {
         0: "off",
         1: "auto",
-        2: "off",
+        2: "manual",
         3: "manual"
     }.get(mode, "unknown")
 
@@ -195,6 +196,7 @@ def parse_device(device: dict) -> dict:
         "model": model,
         "mode": mode,
         "status": status,
+        "cloud_status": device.get("status"),
         "temperature": temperature_value,
         "humidity": humidity,
         "set_point": set_point,

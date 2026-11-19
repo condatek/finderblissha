@@ -20,6 +20,8 @@ BLISS2_VERIFY_READS = 10
 BLISS2_VERIFY_TIMEOUT = 45.0
 # How long a polled snapshot stays usable as the base for a command payload.
 SNAPSHOT_TTL = 15.0
+# Two missed BLISS2 check-ins (about ten minutes each), with margin.
+BLISS2_CHECK_IN_TIMEOUT = 25 * 60
 
 # What each command string should look like once the server has taken it.
 _EXPECTED_MODE = {
@@ -87,6 +89,7 @@ class BlissDevice:
         self.battery_level = device_data.get("battery_level")
         self.battery_voltage = device_data.get("battery_voltage")
         self.status = device_data.get("status")
+        self.cloud_status = device_data.get("cloud_status")
         self.serial_number = device_data.get("serial_number")
         self.model = device_data.get("model")
         self.raw = device_data
@@ -110,6 +113,19 @@ class BlissDevice:
         self.last_update = device_data.get("last_update")
         self.timezone = device_data.get("timezone")
         self.sync_version = device_data.get("sync_version", 0)
+        self._last_check_in: float | None = None
+
+    @property
+    def online(self) -> bool:
+        """Whether the cloud snapshot still indicates a reachable thermostat."""
+        if self.tag != "BLISS2":
+            return True
+        if str(self.cloud_status or "").upper().startswith("ERROR"):
+            return False
+        return (
+            self._last_check_in is None
+            or time.monotonic() - self._last_check_in < BLISS2_CHECK_IN_TIMEOUT
+        )
 
     def _build_send_payload(self, modified_settings_string: str) -> dict:
         return {
@@ -431,8 +447,7 @@ class PyFinderBlissAPI:
         """
         known = {self._device_key(d): d for d in self._devices}
         fresh_keys = {self._device_key(device) for device in devices}
-        if not known:
-            return devices, fresh_keys
+        now = time.monotonic()
         for index, device in enumerate(devices):
             previous = known.get(self._device_key(device))
             if (previous is not None
@@ -442,6 +457,23 @@ class PyFinderBlissAPI:
                 devices[index] = previous
                 fresh_keys.discard(self._device_key(device))
                 _LOGGER.debug("Ignoring older device snapshot for %s", self._device_key(device))
+                continue
+
+            if device.tag != "BLISS2":
+                continue
+            # A version bump with changed settings can be an app or HA write.
+            # Only a version bump with identical cloud settings shows a check-in.
+            if previous is None or previous._last_check_in is None:
+                device._last_check_in = now
+            elif (
+                isinstance(previous.sync_version, (int, float))
+                and isinstance(device.sync_version, (int, float))
+                and device.sync_version > previous.sync_version
+                and device.raw.get("settings") == previous.raw.get("settings")
+            ):
+                device._last_check_in = now
+            else:
+                device._last_check_in = previous._last_check_in
 
         seen = {self._device_key(d) for d in devices}
         missing = [device for key, device in known.items() if key not in seen]

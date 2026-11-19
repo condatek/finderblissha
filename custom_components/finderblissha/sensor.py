@@ -113,6 +113,13 @@ class FinderBlissBaseSensor(CoordinatorEntity, SensorEntity):
         return None
 
     @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        device = self._find_device()
+        return device is not None and device.online
+
+    @property
     def native_value(self):
         dev = self._find_device()
         if not dev:
@@ -327,22 +334,13 @@ def _format_schedule(auto_schedule: dict, schedules_parsed: list) -> tuple[str |
     return active_preset, schedule_attrs
 
 
-class FinderBlissScheduleSensor(CoordinatorEntity, SensorEntity):
+class FinderBlissScheduleSensor(FinderBlissBaseSensor):
     """Sensor showing the active schedule with per-day time blocks."""
 
-    _attr_has_entity_name = True
     _attr_name = "Schedule"
 
     def __init__(self, coordinator: DataUpdateCoordinator, device: BlissDevice):
-        super().__init__(coordinator)
-        self._device_serial = getattr(device, "serial_number", getattr(device, "name", None))
-        self._attr_unique_id = f"finderbliss_{self._device_serial}_schedule"
-
-    def _find_device(self) -> BlissDevice | None:
-        for d in self.coordinator.data:
-            if getattr(d, "serial_number", getattr(d, "name", None)) == self._device_serial:
-                return d
-        return None
+        super().__init__(coordinator, device, "schedule", "automatic_schedule")
 
     @property
     def native_value(self) -> str | None:
@@ -367,14 +365,3 @@ class FinderBlissScheduleSensor(CoordinatorEntity, SensorEntity):
         if preset_names:
             attrs["available_presets"] = preset_names
         return attrs
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        dev = self._find_device()
-        serial = getattr(dev, "serial_number", self._device_serial) if dev else self._device_serial
-        return DeviceInfo(
-            identifiers={(DOMAIN, serial)},
-            name=getattr(dev, "name", self._device_serial) if dev else self._device_serial,
-            manufacturer="Finder",
-            model=getattr(dev, "model", None) if dev else None,
-        )
