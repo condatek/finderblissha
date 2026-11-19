@@ -180,6 +180,13 @@ class FinderBlissClimate(CoordinatorEntity, ClimateEntity):
                 return d
         return None
 
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        device = self._find_device()
+        return device is not None and device.online
+
     def _device_value(self, name: str, default: Any = None) -> Any:
         """Read a device attribute, preferring a command still in flight.
 
